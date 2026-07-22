@@ -9,6 +9,7 @@ import { HermesAdapter } from './adapters/hermes/HermesAdapter.js';
 import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting, getProfile, setProfile, clearSuggestions, deleteSuggestion } from './db.js';
 import { getInbox, generateSuggestions, applySuggestion, dismissSuggestion, snoozeSuggestion, restoreSuggestion, sendMorningBrief } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
+import { scoutSkills } from './skill-scout.js';
 import { generateDreams } from './dreamer.js';
 import { listDreams, setDreamStatus } from './db.js';
 import { startScheduler } from './scheduler.js';
@@ -88,16 +89,22 @@ async function serveStatic(req, res, urlPath) {
   if (rel === '/' || rel === '') rel = '/index.html';
   const full = normalize(join(config.publicDir, rel));
   if (!full.startsWith(config.publicDir)) { res.writeHead(403).end('Forbidden'); return; }
+  // Los assets de Vite van con hash en el nombre → cacheables para siempre.
+  // El resto (index.html sobre todo) se revalida, si no el browser sirve un
+  // index viejo que apunta a un bundle que ya no existe tras cada build.
+  const cacheOf = (p) => p.includes('/assets/')
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
   try {
     const data = await readFile(full);
-    res.writeHead(200, { 'Content-Type': MIME[extname(full)] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[extname(full)] || 'application/octet-stream', 'Cache-Control': cacheOf(full) });
     res.end(data);
   } catch {
     // SPA fallback: si no es un asset con extensión, servir index.html.
     if (!extname(full)) {
       try {
         const idx = await readFile(join(config.publicDir, 'index.html'));
-        res.writeHead(200, { 'Content-Type': MIME['.html'] });
+        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
         return res.end(idx);
       } catch { /* sin build todavía */ }
     }
@@ -153,6 +160,16 @@ const handler = async (req, res) => {
         cache.clear();
         return sendJson(res, r, r.ok ? 200 : 400);
       }
+      if (path === '/api/moa/save') {
+        const r = await adapter.moaSavePreset(body);
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : 400);
+      }
+      if (path === '/api/moa/delete') {
+        const r = await adapter.moaDeletePreset(body.name);
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : 400);
+      }
       if (path === '/api/personas/model') {
         const r = await adapter.setPersonaModel(body.profile, body);
         cache.clear();
@@ -202,6 +219,7 @@ const handler = async (req, res) => {
       }
       if (path === '/api/profile') { cache.clear(); return sendJson(res, setProfile(body || {})); }
       if (path === '/api/profile/learn') { const r = await learnProfile(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
+      if (path === '/api/skills/scout') { const r = await scoutSkills(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
       if (path === '/api/dreams/generate') { const r = await generateDreams(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
       if (path === '/api/dreams/action') { cache.clear(); return sendJson(res, setDreamStatus(body.id, body.status === 'saved' ? 'saved' : 'dismissed')); }
       if (path === '/api/memory/write') {

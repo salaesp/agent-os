@@ -14,6 +14,7 @@ function actionPreview(s) {
     case 'goal': return `crea objetivo «${p.title || s.title}»`;
     case 'profile': return `agrega a tu perfil: «${p.value || ''}»`;
     case 'goal_progress': return `actualiza el objetivo «${p.goalTitle || ''}» → ${p.progress}%`;
+    case 'skill_learn': return `corre /learn en Hermes: «${String(p.request || '').slice(0, 80)}…»`;
     default: return null;
   }
 }

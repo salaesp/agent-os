@@ -132,9 +132,82 @@ export class HermesAdapter {
     return { ok: true, stdout: `${profile}: modelo default → ${m}${pr ? ` (${pr})` : ''}` };
   }
 
+  // Mixture of Agents: presets configurados (referencias en paralelo + agregador).
+  // MoA es un provider VIRTUAL de Hermes: se usa con provider=moa y model=<preset>,
+  // así que los presets entran al picker de modelos como un grupo más. La fuente
+  // es `hermes moa list` (incluye el preset built-in "default" que no está en
+  // config.yaml). Cacheado ~60s: el CLI tarda unos segundos.
+  async getMoa() {
+    const c = this._moaCache;
+    if (c && Date.now() - c.ts < 60_000) return c.val;
+    const r = await this._run('(default)', ['moa', 'list'], { timeout: 30_000 });
+    const t = (r.stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
+    const val = { ok: r.ok && !!t, defaultPreset: null, presets: [] };
+    if (val.ok) {
+      val.defaultPreset = (t.match(/^Default:\s*(\S+)/m) || [])[1] || null;
+      let cur = null;
+      for (const line of t.split('\n')) {
+        // Cabecera de preset: "* nombre" (el default) o "  nombre" (el resto).
+        // Un único token [\w-]+ — las demás líneas tienen ':', dígitos o espacios.
+        const p = line.match(/^(?:\*\s+|\s{0,4})([\w-]+)\s*$/);
+        if (p) { cur = { name: p[1], references: [], aggregator: null }; val.presets.push(cur); continue; }
+        if (!cur) continue;
+        const ref = line.match(/^\s+\d+\.\s+(\S+)/);
+        if (ref) { cur.references.push(ref[1]); continue; }
+        const ag = line.match(/^\s+Aggregator:\s*(\S+)/);
+        if (ag) cur.aggregator = ag[1];
+      }
+    }
+    this._moaCache = { ts: Date.now(), val };
+    return val;
+  }
+
+  // Crea o reemplaza un preset MoA. `hermes moa configure` es interactivo (no
+  // sirve desde acá), así que escribimos el bloque moa: de config.yaml con el
+  // formato documentado. Red de seguridad: backup + escritura atómica + verificar
+  // con `hermes moa list` que el CLI reconozca el preset; si no, rollback.
+  async moaSavePreset({ name, references, aggregator } = {}) {
+    const nm = String(name || '').trim();
+    if (!/^[\w-]{1,40}$/.test(nm)) return { ok: false, stderr: 'nombre de preset inválido (letras/números/guiones)' };
+    const refs = (Array.isArray(references) ? references : [])
+      .map((r) => ({ provider: String(r?.provider || '').trim(), model: String(r?.model || '').trim() }));
+    const ag = { provider: String(aggregator?.provider || '').trim(), model: String(aggregator?.model || '').trim() };
+    if (!refs.length || refs.length > 8) return { ok: false, stderr: 'elegí entre 1 y 8 modelos de referencia' };
+    for (const x of [...refs, ag]) {
+      if (!/^[\w-]{1,40}$/.test(x.provider) || x.provider === 'moa') return { ok: false, stderr: `provider inválido: "${x.provider}"` };
+      if (!MODEL_RE.test(x.model)) return { ok: false, stderr: `modelo inválido: "${x.model}"` };
+    }
+    const file = join(this.dir, 'config.yaml');
+    const text = await readText(file);
+    if (text == null) return { ok: false, stderr: 'no se pudo leer config.yaml' };
+    const bak = `${file}.agentos-moa.bak`;
+    try {
+      await copyFile(file, bak);
+      const tmp = `${file}.agentos.tmp`;
+      await writeFile(tmp, upsertMoaPreset(text, nm, refs, ag), 'utf8');
+      await rename(tmp, file);
+    } catch (e) { return { ok: false, stderr: e.message }; }
+    this._moaCache = null;
+    const check = await this.getMoa();
+    if (!check.ok || !check.presets.some((p) => p.name === nm)) {
+      try { await copyFile(bak, file); } catch { /* el backup queda en disco */ }
+      this._moaCache = null;
+      return { ok: false, stderr: 'Hermes no reconoció el preset escrito — config.yaml restaurado del backup' };
+    }
+    return { ok: true, stdout: `preset "${nm}" guardado (${refs.length} referencia${refs.length > 1 ? 's' : ''} + agregador)` };
+  }
+
+  async moaDeletePreset(name) {
+    const nm = String(name || '').trim();
+    if (!/^[\w-]{1,40}$/.test(nm)) return { ok: false, stderr: 'nombre inválido' };
+    const r = await this._run('(default)', ['moa', 'delete', nm], { timeout: 30_000 });
+    this._moaCache = null;
+    return { ok: r.ok, stdout: r.stdout, stderr: r.ok ? null : (r.stderr || r.stdout) };
+  }
+
   // Modelos disponibles para el picker: la cache del selector de Hermes
-  // (provider_models_cache.json) + los que ya están en uso (crons/personas),
-  // así el dropdown nunca "pierde" un modelo aunque no esté en la cache.
+  // (provider_models_cache.json) + los presets MoA (provider virtual) + los que
+  // ya están en uso (crons/personas), así el dropdown nunca "pierde" un modelo.
   async getModels() {
     const cacheFile = await readJson(join(this.dir, 'provider_models_cache.json'));
     const providers = [];
@@ -142,6 +215,13 @@ export class HermesAdapter {
       const models = (v?.models || []).filter((x) => typeof x === 'string');
       if (models.length) providers.push({ name, models: models.sort() });
     }
+    let moa = null;
+    try {
+      moa = await this.getMoa();
+      if (moa.ok && moa.presets.length) {
+        providers.push({ name: 'moa', models: moa.presets.map((p) => p.name) });
+      }
+    } catch { /* best-effort */ }
     const inUse = new Set();
     try {
       for (const c of await this.getCrons()) if (c.model) inUse.add(`${c.provider || ''}|${c.model}`);
@@ -155,7 +235,7 @@ export class HermesAdapter {
     } catch { /* best-effort */ }
     providers.sort((a, b) => a.name.localeCompare(b.name));
     for (const p of providers) p.models.sort();
-    return { ok: providers.length > 0, providers };
+    return { ok: providers.length > 0, providers, moa: moa?.ok ? moa : null };
   }
 
   // --- Chat one-shot con el agente (vía CLI, sin depender del gateway :8642) ---
@@ -176,13 +256,47 @@ export class HermesAdapter {
 
   // Pass generador dirigido (para el motor de sugerencias): manda un prompt que
   // pide JSON y devuelve el texto crudo. Tool-free por instrucción del prompt.
-  async generateRawSuggestions(prompt, { model } = {}) {
+  async generateRawSuggestions(prompt, { model, timeout = 240_000 } = {}) {
     // Tool-free (`-t ''`): pass dirigido y determinista, sin herramientas → más barato,
     // más rápido y sin riesgo de efectos secundarios mientras "piensa".
     const args = ['chat', '-q', String(prompt), '-Q', '-t', ''];
     if (model) args.push('-m', String(model));
-    const r = await this._run('(default)', args, { timeout: 240_000 });
+    const r = await this._run('(default)', args, { timeout });
     return { ok: r.ok, text: r.stdout, error: r.ok ? null : (r.stderr || r.stdout) };
+  }
+
+  // --- /learn headless (skill-scout) ---
+  // El slash-command /learn de Hermes no es magia de sesión: en TODAS sus
+  // superficies (cli_commands_mixin, gateway/run, tui_gateway) es literalmente
+  // build_learn_prompt(texto) inyectado como un turno normal del agente. Acá se
+  // replica eso: prompt canónico del propio Hermes (vía el python del venv, así
+  // los estándares de autoría siempre están al día) → `chat -q` con toolsets.
+  buildLearnPrompt(request) {
+    const py = join(this.dir, 'hermes-agent', 'venv', 'bin', 'python');
+    const code = 'import sys\nfrom agent.learn_prompt import build_learn_prompt\nsys.stdout.write(build_learn_prompt(sys.argv[1]))';
+    return new Promise((resolve) => {
+      execFile(py, ['-c', code, String(request)], {
+        cwd: join(this.dir, 'hermes-agent'), timeout: 20_000, maxBuffer: 1024 * 1024,
+      }, (err, stdout) => {
+        if (!err && stdout && stdout.includes('[/learn]')) return resolve(stdout);
+        // Fallback si cambia el layout del paquete: prompt mínimo propio (menor
+        // calidad de autoría, pero no bloquea el flujo).
+        resolve(`[/learn] The user wants you to learn a reusable skill from the request below, and save it.\n\nTHE REQUEST:\n${request}\n\nGather whatever the request points to using your tools, then author ONE well-structured SKILL.md and save it via the skill_manage tool (action="create").`);
+      });
+    });
+  }
+
+  // Corre el /learn completo headless y devuelve qué skills aparecieron. Un diff
+  // vacío con salida ok también es éxito: el agente pudo patchear una existente.
+  async learnSkill(profile, request, { timeout = 600_000 } = {}) {
+    if (!request || !String(request).trim()) return { ok: false, error: 'request vacío' };
+    const snapshot = async () => new Set((await this.getSkills()).skills.map((s) => `${s.category}/${s.name}`));
+    const before = await snapshot();
+    const prompt = await this.buildLearnPrompt(String(request));
+    const r = await this._run(profile, ['chat', '-q', prompt, '-Q', '-t', 'skills,file,web,terminal'], { timeout });
+    if (!r.ok) return { ok: false, error: r.stderr || r.stdout };
+    const newSkills = [...(await snapshot())].filter((k) => !before.has(k));
+    return { ok: true, newSkills, updatedExisting: newSkills.length === 0, response: r.stdout };
   }
 
   // Push a un canal sin pasar por el LLM (entrega proactiva).
@@ -843,6 +957,56 @@ function extractCliToolsets(yaml) {
     if (it) items.push(clean(it[1]));
   }
   return items;
+}
+
+// Genera las líneas YAML de un preset MoA con la indentación de las claves de preset.
+function moaPresetLines(name, refs, ag, keyIndent) {
+  const i = ' '.repeat(keyIndent);
+  const out = [`${i}${name}:`, `${i}  reference_models:`];
+  for (const r of refs) out.push(`${i}    - provider: ${r.provider}`, `${i}      model: ${r.model}`);
+  out.push(`${i}  aggregator:`, `${i}    provider: ${ag.provider}`, `${i}    model: ${ag.model}`, `${i}  enabled: true`);
+  return out;
+}
+
+// Inserta o reemplaza `moa.presets.<name>` en el texto de config.yaml. Line-based
+// (sin lib de YAML): preserva default_preset, otros presets y el resto del archivo.
+// Los valores llegan validados (nombre [\w-]+, modelos MODEL_RE) — sin inyección.
+function upsertMoaPreset(text, name, refs, ag) {
+  const lines = text.split('\n');
+  const isBlank = (l) => l.trim() === '';
+  const moaStart = lines.findIndex((l) => l.startsWith('moa:'));
+  if (moaStart < 0) {
+    return `${text.replace(/\s*$/, '')}\n\nmoa:\n  presets:\n${moaPresetLines(name, refs, ag, 4).join('\n')}\n`;
+  }
+  let moaEnd = moaStart + 1;
+  while (moaEnd < lines.length && (isBlank(lines[moaEnd]) || indentOf(lines[moaEnd]) > 0)) moaEnd++;
+  let presetsIdx = -1;
+  for (let i = moaStart + 1; i < moaEnd; i++) if (/^\s+presets:\s*$/.test(lines[i])) { presetsIdx = i; break; }
+  if (presetsIdx < 0) {
+    lines.splice(moaEnd, 0, '  presets:', ...moaPresetLines(name, refs, ag, 4));
+    return lines.join('\n');
+  }
+  const pIndent = indentOf(lines[presetsIdx]);
+  let keyIndent = pIndent + 2, sawChild = false;
+  let tStart = -1, tEnd = -1, lastChild = presetsIdx;
+  for (let i = presetsIdx + 1; i < moaEnd; i++) {
+    if (isBlank(lines[i])) continue;
+    const ind = indentOf(lines[i]);
+    if (ind <= pIndent) break; // se terminó el bloque presets
+    if (!sawChild) { keyIndent = ind; sawChild = true; }
+    if (ind === keyIndent) {
+      if (tStart >= 0 && tEnd < 0) tEnd = i; // primera clave después del target
+      if (new RegExp(`^\\s*${name}:\\s*$`).test(lines[i])) tStart = i;
+    }
+    lastChild = i;
+  }
+  const block = moaPresetLines(name, refs, ag, keyIndent);
+  if (tStart >= 0) {
+    lines.splice(tStart, (tEnd < 0 ? lastChild + 1 : tEnd) - tStart, ...block);
+  } else {
+    lines.splice(lastChild + 1, 0, ...block);
+  }
+  return lines.join('\n');
 }
 
 // Extrae servidores MCP del bloque mcp_servers:. Cada server es una clave anidada.

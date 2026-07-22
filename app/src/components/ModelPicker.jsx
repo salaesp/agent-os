@@ -31,7 +31,7 @@ export function ModelPicker({ model, provider, inherit = false, busy = false, on
             ? <option value="">— heredar el modelo del perfil —</option>
             : !model && <option value="" disabled>elegí un modelo…</option>}
           {providers.map((p) => (
-            <optgroup label={p.name} key={p.name}>
+            <optgroup label={p.name === 'moa' ? 'moa — mixture of agents (presets)' : p.name} key={p.name}>
               {p.models.map((m) => <option value={`${p.name}|${m}`} key={m}>{m}</option>)}
             </optgroup>
           ))}

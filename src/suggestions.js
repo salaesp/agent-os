@@ -10,7 +10,7 @@ import {
 import { computeAffinity, affinityHint, scoreNudge } from './preferences.js';
 
 const CATEGORIES = new Set(['workflow', 'vida', 'aprendizaje']);
-const ACTIONS = new Set(['cron', 'kanban', 'reminder', 'memory', 'goal', 'goal_progress', 'none']);
+const ACTIONS = new Set(['cron', 'kanban', 'reminder', 'memory', 'goal', 'goal_progress', 'skill_learn', 'none']);
 
 // --- Contexto local (todo lo que el Agent OS ya lee) ---
 async function buildContext(adapter) {
@@ -250,6 +250,21 @@ export async function applySuggestion(adapter, id) {
         setProfile({ [field]: list });
         res = { ok: true, profile: true };
         break;
+      }
+      case 'skill_learn': {
+        // El /learn corre el agente COMPLETO de Hermes y tarda minutos: no
+        // bloquear el HTTP. Se marca aplicada optimista, el learn corre en
+        // background y el resultado llega por push al canal configurado.
+        const req = p.request || s.title;
+        setSuggestionStatus(id, 'applied');
+        recordPrefEvent(s.category, s.action_type, 'applied');
+        adapter.learnSkill('(default)', req)
+          .then((r) => adapter.pushMessage(getSetting('push_channel', 'discord'),
+            r.ok
+              ? `🎓 Skill aprendida: ${r.newSkills?.length ? r.newSkills.join(', ') : '(actualizó una skill existente)'}\n— tu Agent OS`
+              : `⚠️ Falló el /learn de «${s.title}»: ${r.error || 'sin detalle'}\nPodés correrlo a mano: /learn ${String(req).slice(0, 300)}`))
+          .catch(() => {});
+        return { ok: true, info: 'learning en curso — te aviso por push cuando termine', suggestion: getSuggestion(id) };
       }
       case 'none':
       default:

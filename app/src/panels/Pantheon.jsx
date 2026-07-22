@@ -9,10 +9,22 @@ export function Pantheon() {
   const personas = useApi('/api/personas');
   const skillsApi = useApi('/api/skills/all');
   const curator = useApi('/api/dreaming/curator');
+  const models = useApi('/api/models');
   const [q, setQ] = useState(routeParam('skill') || '');
   const [cat, setCat] = useState('todas');
   const [persona, setPersona] = useState('todas');
   const [onlyUsed, setOnlyUsed] = useState(false);
+  const [scouting, setScouting] = useState(false);
+  const [scoutMsg, setScoutMsg] = useState(null);
+
+  const scout = async () => {
+    setScouting(true); setScoutMsg(null);
+    try {
+      const r = await post('/api/skills/scout', {});
+      setScoutMsg({ ok: true, text: r.created ? `${r.created} candidato(s) a skill en el inbox de Sugerencias` : 'sin flujos repetidos nuevos' });
+    } catch (e) { setScoutMsg({ ok: false, text: e.message }); }
+    finally { setScouting(false); }
+  };
 
   if (personas.loading || skillsApi.loading) return <Loading />;
   if (skillsApi.error) return <><PageHead title="Pantheon" /><ErrorBox error={skillsApi.error} /></>;
@@ -50,9 +62,17 @@ export function Pantheon() {
         ))}
       </div>
 
+      {models.data?.moa && <MoaCard moa={models.data.moa} providers={models.data.providers || []} reload={models.reload} />}
+
       {curator.data?.ok && <CuratorCard c={curator.data} reload={curator.reload} />}
 
-      <h3 style="margin:26px 0 10px">Skills</h3>
+      <div class="spread" style="margin:26px 0 10px">
+        <h3 style="margin:0">Skills</h3>
+        <button class="chip small" disabled={scouting} onClick={scout} title="Busca flujos repetidos en tus conversaciones y propone convertirlos en skills (/learn)">
+          <span class="msr" style="font-size:14px">travel_explore</span>{scouting ? 'Buscando…' : 'Buscar candidatos a skill'}
+        </button>
+      </div>
+      {scoutMsg && <div class="mono" style={`font-size:11px;margin-bottom:8px;color:${scoutMsg.ok ? 'var(--ok)' : 'var(--err)'}`}>{scoutMsg.ok ? '✓ ' : '✕ '}{scoutMsg.text}</div>}
       <div class="toolbar">
         <div class="seg">
           {['todas', 'usadas'].map((k) => <button class={onlyUsed === (k === 'usadas') ? 'on' : ''} onClick={() => setOnlyUsed(k === 'usadas')} key={k}>{k}</button>)}
@@ -83,6 +103,123 @@ export function Pantheon() {
         {list.length === 0 && <div class="muted" style="padding:20px">Sin resultados.</div>}
       </div>
     </>
+  );
+}
+
+// Mixture of Agents: presets del provider virtual "moa". Cada preset combina
+// modelos de referencia (opinan en paralelo, sin tools) + un agregador (actúa).
+// Se usan eligiendo el preset como modelo con provider moa — en cualquier
+// persona o cron desde el mismo picker de modelos. Crear/editar escribe el
+// bloque moa: de config.yaml (backend valida con `hermes moa list` + rollback).
+function MoaCard({ moa, providers, reload }) {
+  const [editing, setEditing] = useState(null); // null | preset | {} (nuevo)
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const del = async (p) => {
+    if (!confirm(`¿Borrar el preset "${p.name}"?`)) return;
+    setBusy(true); setMsg(null);
+    try { const r = await post('/api/moa/delete', { name: p.name }); setMsg({ ok: true, text: r.stdout || 'borrado' }); reload(); }
+    catch (e) { setMsg({ ok: false, text: e.message }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div class="card" style="margin-top:16px">
+      <div class="spread" style="margin-bottom:10px">
+        <h3><span class="msr" style="font-size:18px;vertical-align:-3px;color:var(--gold)">hub</span> Mixture of Agents <span class="muted" style="font-weight:400;font-size:12px">— referencias opinan, el agregador actúa</span></h3>
+        <button class="chip small" disabled={busy} onClick={() => { setEditing(editing && !editing.name ? null : {}); setMsg(null); }}>
+          <span class="msr" style="font-size:14px">add</span>Nuevo preset
+        </button>
+      </div>
+      {msg && <div class="mono" style={`font-size:11px;margin-bottom:8px;color:${msg.ok ? 'var(--ok)' : 'var(--err)'}`}>{msg.ok ? '✓ ' : '✕ '}{msg.text}</div>}
+      {editing && (
+        <MoaForm providers={providers} initial={editing.name ? editing : null}
+          onDone={(m) => { setEditing(null); if (m) setMsg(m); if (m?.ok) reload(); }} />
+      )}
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+        {moa.presets.map((p) => (
+          <div style="padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-m)" key={p.name}>
+            <div class="spread">
+              <b style="font-size:13px">{p.name}</b>
+              <span class="chip small mono">moa/{p.name}</span>
+            </div>
+            <div class="muted" style="font-size:11px;margin:8px 0 4px;text-transform:uppercase">Referencias</div>
+            <div class="wrap">
+              {p.references.map((r) => <span class="chip small mono" key={r}>{r}</span>)}
+              {p.references.length === 0 && <span class="muted" style="font-size:12px">—</span>}
+            </div>
+            <div class="muted" style="font-size:11px;margin:8px 0 4px;text-transform:uppercase">Agregador</div>
+            {p.aggregator && <span class="chip small mono">{p.aggregator}</span>}
+            <div class="wrap" style="margin-top:10px">
+              <button class="chip small" disabled={busy} onClick={() => { setEditing(p); setMsg(null); }}><span class="msr" style="font-size:14px">edit</span>editar</button>
+              <button class="chip small" disabled={busy} style="color:var(--err)" onClick={() => del(p)}><span class="msr" style="font-size:14px">delete</span></button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:10px">
+        Para usar un preset: editá el modelo de una persona o un cron y elegilo en el grupo "moa".
+      </div>
+    </div>
+  );
+}
+
+// Form de preset MoA: N referencias + 1 agregador, opciones desde /api/models
+// (sin el grupo moa — un preset no puede referenciar otro preset).
+function MoaForm({ providers, initial, onDone }) {
+  const provs = providers.filter((p) => p.name !== 'moa');
+  const toVal = (s) => { const i = (s || '').indexOf(':'); return i > 0 ? `${s.slice(0, i)}|${s.slice(i + 1)}` : ''; };
+  const parse = (v) => { const i = v.indexOf('|'); return { provider: v.slice(0, i), model: v.slice(i + 1) }; };
+  const [name, setName] = useState(initial?.name || '');
+  const [refs, setRefs] = useState(initial?.references?.length ? initial.references.map(toVal) : ['']);
+  const [ag, setAg] = useState(initial ? toVal(initial.aggregator) : '');
+  const [busy, setBusy] = useState(false);
+  const setRef = (i, v) => setRefs((r) => r.map((x, j) => (j === i ? v : x)));
+
+  const Sel = ({ value, onChange, placeholder }) => (
+    <div class="search">
+      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={busy}>
+        <option value="" disabled>{placeholder}</option>
+        {provs.map((p) => (
+          <optgroup label={p.name} key={p.name}>
+            {p.models.map((m) => <option value={`${p.name}|${m}`} key={m}>{m}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const r = await post('/api/moa/save', {
+        name, references: refs.filter(Boolean).map(parse), aggregator: ag ? parse(ag) : null,
+      });
+      onDone({ ok: true, text: r.stdout || 'preset guardado' });
+    } catch (e) { onDone({ ok: false, text: e.message }); }
+    finally { setBusy(false); }
+  };
+  const valid = name.trim() && refs.some(Boolean) && ag;
+
+  return (
+    <div style="display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:12px;background:var(--panel-2);border-radius:var(--radius-m);margin-bottom:12px">
+      <div class="search"><input placeholder="Nombre del preset — ej: razonadores" value={name} disabled={busy || !!initial} onInput={(e) => setName(e.target.value)} /></div>
+      <div class="muted" style="font-size:11px;text-transform:uppercase">Referencias (opinan en paralelo)</div>
+      {refs.map((v, i) => (
+        <div class="row" key={i} style="min-width:0">
+          <div class="grow" style="min-width:0"><Sel value={v} onChange={(x) => setRef(i, x)} placeholder="elegí un modelo…" /></div>
+          {refs.length > 1 && <button class="chip small" disabled={busy} onClick={() => setRefs((r) => r.filter((_, j) => j !== i))}><span class="msr" style="font-size:14px">close</span></button>}
+        </div>
+      ))}
+      {refs.length < 8 && <div><button class="chip small" disabled={busy} onClick={() => setRefs((r) => [...r, ''])}><span class="msr" style="font-size:14px">add</span>agregar referencia</button></div>}
+      <div class="muted" style="font-size:11px;text-transform:uppercase">Agregador (actúa y usa las tools)</div>
+      <Sel value={ag} onChange={setAg} placeholder="elegí el agregador…" />
+      <div class="wrap">
+        <button class="chip filter-chip on" disabled={busy || !valid} onClick={submit}>{busy ? 'Guardando…' : (initial ? 'Guardar cambios' : 'Crear preset')}</button>
+        <button class="chip" disabled={busy} onClick={() => onDone(null)}>Cancelar</button>
+      </div>
+    </div>
   );
 }
 

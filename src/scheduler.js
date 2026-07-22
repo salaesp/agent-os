@@ -5,6 +5,7 @@
 // Con rate-limit (intervalo mínimo), tope diario de generaciones (costo) y lock.
 import { generateSuggestions, sendMorningBrief } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
+import { scoutSkills } from './skill-scout.js';
 import { generateDreams } from './dreamer.js';
 import { getSetting, setSetting } from './db.js';
 
@@ -75,6 +76,9 @@ async function maybeGenerate(adapter) {
       // Aprendizaje de perfil (propone updates para que el usuario confirme).
       const l = await learnProfile(adapter);
       if (l.ok && l.created) console.log(`[scheduler] perfil: ${l.created} cambios propuestos`);
+      // Skill-scout: flujos repetidos → candidatos a /learn (confirmación 1-click).
+      const sk = await scoutSkills(adapter);
+      if (sk.ok && sk.created) console.log(`[scheduler] skill-scout: ${sk.created} candidato(s) a skill`);
       // Dreaming inventivo (ideas/patrones sobre la vida del usuario).
       const dr = await generateDreams(adapter);
       if (dr.ok && dr.created) console.log(`[scheduler] dreaming: ${dr.created} ideas`);
