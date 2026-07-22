@@ -1,0 +1,14 @@
+{
+  "name": "agent-os",
+  "version": "0.1.0",
+  "description": "Agent OS — capa visual y control seguro sobre el agente (Hermes hoy, agnóstico)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --experimental-sqlite src/server.js",
+    "dev": "node --experimental-sqlite --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

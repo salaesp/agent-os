@@ -1,0 +1,23 @@
+[Unit]
+Description=Agent OS — capa visual y control seguro sobre el agente (Hermes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/code/agent-os
+# PATH: incluye ~/.local/bin (CLI `hermes`, `bws`) y rutas del sistema.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PORT=8082
+Environment=NODE_NO_WARNINGS=1
+# Raíz del agente (por defecto ~/.hermes). El adapter es lo único acoplado.
+# Environment=HERMES_DIR=%h/.hermes
+# Secretos opcionales (BWS_ACCESS_TOKEN, y a futuro API_SERVER_KEY del gateway
+# para el chat). El "-" lo hace opcional: arranca aunque el fichero no exista.
+EnvironmentFile=-%h/.config/agent-os/env
+ExecStart=/usr/bin/node --experimental-sqlite %h/code/agent-os/src/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
