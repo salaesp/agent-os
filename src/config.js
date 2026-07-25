@@ -65,4 +65,8 @@ export const config = {
   // Gateway API OpenAI-compatible de Hermes (para el chat, fase posterior).
   gatewayApiUrl: env('HERMES_GATEWAY_API', 'http://127.0.0.1:8642'),
   gatewayApiKey: env('API_SERVER_KEY', null),
+
+  // URL pública desde la que se accede al dashboard (para links de un-click en
+  // notificaciones push). Sin override, se arma con la IP de Tailscale.
+  publicUrl: env('PUBLIC_URL', TS_IP ? `http://${TS_IP}:${Number(env('PORT', 8082))}` : null),
 };

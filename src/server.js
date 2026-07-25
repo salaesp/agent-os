@@ -7,7 +7,7 @@ import { join, normalize, extname } from 'node:path';
 import { config } from './config.js';
 import { HermesAdapter } from './adapters/hermes/HermesAdapter.js';
 import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting, getProfile, setProfile, clearSuggestions, deleteSuggestion } from './db.js';
-import { getInbox, generateSuggestions, applySuggestion, dismissSuggestion, snoozeSuggestion, restoreSuggestion, sendMorningBrief } from './suggestions.js';
+import { getInbox, generateSuggestions, applySuggestion, applySuggestions, dismissSuggestion, dismissSuggestions, snoozeSuggestion, restoreSuggestion, sendMorningBrief, quickAction } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
 import { generateDreams, promoteDream, promotingDreams } from './dreamer.js';
@@ -251,6 +251,17 @@ const handler = async (req, res) => {
       if (path === '/api/suggestions/dismiss') { cache.clear(); return sendJson(res, dismissSuggestion(body.id, body.reason)); }
       if (path === '/api/suggestions/snooze') { cache.clear(); return sendJson(res, snoozeSuggestion(body.id)); }
       if (path === '/api/suggestions/restore') { cache.clear(); return sendJson(res, restoreSuggestion(body.id)); }
+      if (path === '/api/suggestions/apply-batch') {
+        if (!Array.isArray(body.ids) || !body.ids.length) return sendJson(res, { error: 'ids requerido' }, 400);
+        const r = await applySuggestions(adapter, body.ids);
+        cache.clear();
+        return sendJson(res, r);
+      }
+      if (path === '/api/suggestions/dismiss-batch') {
+        if (!Array.isArray(body.ids) || !body.ids.length) return sendJson(res, { error: 'ids requerido' }, 400);
+        cache.clear();
+        return sendJson(res, dismissSuggestions(body.ids, body.reason));
+      }
       if (path === '/api/suggestions/clear') { cache.clear(); return sendJson(res, clearSuggestions(body.scope || 'all')); }
       if (path === '/api/suggestions/delete') { cache.clear(); return sendJson(res, deleteSuggestion(body.id)); }
       if (path === '/api/suggestions/brief') { const r = await sendMorningBrief(adapter, { force: true }); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
@@ -330,6 +341,18 @@ const handler = async (req, res) => {
 
     // Mission Control (lectura, sin cache: es barato y local).
     if (path === '/api/goals') return sendJson(res, listGoals());
+
+    // Link de un-click desde una notificación push (Aplicar/Descartar sin abrir
+    // el dashboard). GET porque lo dispara un tap en Discord/Slack/Telegram.
+    if (path === '/api/suggestions/quick-action') {
+      const r = await quickAction(adapter, url.searchParams.get('id'), url.searchParams.get('action'), url.searchParams.get('token'));
+      cache.clear();
+      res.writeHead(r.ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      const heading = r.ok ? (url.searchParams.get('action') === 'apply' ? 'Sugerencia aplicada ✓' : 'Sugerencia descartada') : (r.error || 'Error');
+      return res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent OS</title>` +
+        `<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}` +
+        `p{opacity:.65;font-size:14px}</style></head><body><div><h2>${r.ok ? '✓' : '✕'} ${heading}</h2><p>Podés cerrar esta pestaña.</p></div></body></html>`);
+    }
 
     // Proactividad: inbox de sugerencias + perfil de usuario
     if (path === '/api/suggestions') return sendJson(res, getInbox());

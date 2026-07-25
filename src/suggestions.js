@@ -8,6 +8,8 @@ import {
   pushSentToday, recordPushSent, recordPrefEvent, recordDecision, listDecisions,
 } from './db.js';
 import { computeAffinity, affinityHint, scoreNudge } from './preferences.js';
+import { createHmac, randomBytes } from 'node:crypto';
+import { config } from './config.js';
 
 const CATEGORIES = new Set(['workflow', 'vida', 'aprendizaje']);
 const ACTIONS = new Set(['cron', 'kanban', 'reminder', 'memory', 'goal', 'goal_progress', 'skill_learn', 'none']);
@@ -230,11 +232,39 @@ function storeInsight(title, rationale) {
   setProfile({ storedInsights: list.slice(0, 30) });
 }
 
+// --- Links de un-click (notificaciones interactivas): el canal de push
+// (`hermes send`) sólo manda texto plano, sin botones — así que la
+// "interactividad" es un link firmado que aplica/descarta al tocarlo, sin
+// abrir el dashboard. El secreto vive en settings, se genera una sola vez.
+function pushSecret() {
+  let secret = getSetting('push_link_secret', null);
+  if (!secret) { secret = randomBytes(24).toString('hex'); setSetting('push_link_secret', secret); }
+  return secret;
+}
+function signAction(id, action) {
+  return createHmac('sha256', pushSecret()).update(`${id}:${action}`).digest('hex').slice(0, 24);
+}
+function quickActionUrl(id, action) {
+  if (!config.publicUrl) return null;
+  return `${config.publicUrl}/api/suggestions/quick-action?id=${id}&action=${action}&token=${signAction(id, action)}`;
+}
+// Verifica el token y despacha a apply/dismiss existentes — nada de lógica nueva.
+export async function quickAction(adapter, id, action, token) {
+  if (action !== 'apply' && action !== 'dismiss') return { ok: false, error: 'acción inválida' };
+  if (!token || token !== signAction(id, action)) return { ok: false, error: 'link inválido o vencido' };
+  return action === 'apply' ? applySuggestion(adapter, id) : dismissSuggestion(id, 'not_interested');
+}
+
 // --- Entrega push (Fase 3): manda una sugerencia a un canal vía `hermes send`. ---
 function formatPush(s) {
   const emoji = { workflow: '🛠️', vida: '🌱', aprendizaje: '📚' }[s.category] || '💡';
   const prev = s.action_type !== 'none' ? `\n▸ acción disponible en el Agent OS` : '';
-  return `${emoji} Sugerencia (${s.category})\n*${s.title}*\n${s.rationale || ''}${prev}\n— tu Agent OS`;
+  const applyUrl = s.action_type !== 'none' ? quickActionUrl(s.id, 'apply') : null;
+  const dismissUrl = quickActionUrl(s.id, 'dismiss');
+  const links = (applyUrl || dismissUrl)
+    ? `\n\n${applyUrl ? `✅ Aplicar: ${applyUrl}\n` : ''}${dismissUrl ? `❌ Descartar: ${dismissUrl}` : ''}`
+    : '';
+  return `${emoji} Sugerencia (${s.category})\n*${s.title}*\n${s.rationale || ''}${prev}${links}\n— tu Agent OS`;
 }
 export async function deliverPush(adapter, s) {
   const channel = getSetting('push_channel', 'discord');
@@ -327,6 +357,20 @@ export async function applySuggestion(adapter, id) {
   if (res.ok) { setSuggestionStatus(id, 'applied'); recordPrefEvent(s.category, s.action_type, 'applied'); traceUser(s, 'applied'); }
   else traceUser(s, 'failed', { why: res.error || 'falló al aplicar' });
   return { ...res, suggestion: getSuggestion(id) };
+}
+
+// --- Batch (bandeja de decisiones): mismas rutinas de arriba, una por id.
+// No hay lógica nueva de negocio — sólo evita ida-vuelta HTTP por sugerencia
+// cuando el usuario decide varias de una.
+export async function applySuggestions(adapter, ids) {
+  const results = [];
+  for (const id of ids) results.push({ id, ...(await applySuggestion(adapter, id)) });
+  return { ok: true, applied: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
+}
+
+export function dismissSuggestions(ids, reason) {
+  const results = ids.map((id) => ({ id, ...dismissSuggestion(id, reason) }));
+  return { ok: true, dismissed: results.length, results };
 }
 
 // Motivos de descarte. El motivo cambia DOS cosas: cuánto tiempo se bloquea el

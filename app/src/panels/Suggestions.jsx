@@ -34,6 +34,8 @@ export function Suggestions() {
   const [busyId, setBusyId] = useState(null);
   const [showCfg, setShowCfg] = useState(false);
   const [asking, setAsking] = useState(null); // id de la sugerencia que está eligiendo motivo de descarte
+  const [whyId, setWhyId] = useState(null); // id de la sugerencia con el "¿Por qué?" abierto
+  const [selected, setSelected] = useState(new Set()); // ids marcados para la bandeja de decisiones en lote
 
   if (loading) return <Loading />;
   if (error) return <><PageHead title="Sugerencias" /><ErrorBox error={error} /></>;
@@ -74,6 +76,25 @@ export function Suggestions() {
   const dismiss = async (s, reason) => {
     setAsking(null);
     if (await act(s.id, 'dismiss', reason)) setMsg({ ok: true, text: `descartada · ${REASON_LABEL[reason].toLowerCase()}` });
+  };
+
+  const toggleSel = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const batchAct = async (kind) => {
+    const ids = [...selected];
+    setBusyId('batch'); setMsg(null);
+    try {
+      const r = kind === 'apply'
+        ? await post('/api/suggestions/apply-batch', { ids })
+        : await post('/api/suggestions/dismiss-batch', { ids, reason: 'not_interested' });
+      setMsg({ ok: true, text: kind === 'apply' ? `${r.applied} aplicada(s)${r.failed ? ` · ${r.failed} con error` : ''}` : `${r.dismissed} descartada(s)` });
+      setSelected(new Set());
+      reload();
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    finally { setBusyId(null); }
   };
 
   const toggleAuto = async () => {
@@ -142,6 +163,19 @@ export function Suggestions() {
         <div class="card"><div class="muted">No hay sugerencias pendientes. Tocá <b>«Pensá algo para mí»</b> y el agente te propone mejoras concretas de trabajo, hábitos y aprendizaje — cada una con su porqué y un botón para aplicarla.</div></div>
       )}
 
+      {selected.size > 0 && (
+        <div class="card" style="margin-bottom:12px;position:sticky;top:8px;z-index:5;border-color:var(--gold)">
+          <div class="spread">
+            <b style="font-size:13px">{selected.size} seleccionada{selected.size > 1 ? 's' : ''}</b>
+            <div class="wrap">
+              <button class="chip filter-chip on" disabled={busyId === 'batch'} onClick={() => batchAct('apply')}>{busyId === 'batch' ? '…' : 'Aplicar seleccionadas'}</button>
+              <button class="chip" disabled={busyId === 'batch'} onClick={() => batchAct('dismiss')}>Descartar seleccionadas</button>
+              <button class="chip" disabled={busyId === 'batch'} onClick={() => setSelected(new Set())}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr));align-items:start">
         {active.map((s) => {
           const cat = CAT[s.category] || CAT.workflow;
@@ -150,14 +184,28 @@ export function Suggestions() {
             <div class="card" key={s.id}>
               <div class="spread" style="margin-bottom:6px">
                 <div class="wrap">
+                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleSel(s.id)} title="seleccionar para la bandeja en lote" style="margin-right:2px" />
                   <span class="chip small"><span class="msr" style="font-size:14px;color:var(--gold)">{cat.icon}</span>{cat.label}</span>
                   {s.exploratory ? <span class="chip small" style="color:var(--gold)" title="hace rato que no te propongo esto"><span class="msr" style="font-size:13px">explore</span>explorar</span> : null}
                 </div>
                 <div class="wrap"><span class="chip small" title="score">{s.score}</span><span class="chip small">{MODE[s.mode] || s.mode}</span></div>
               </div>
               <h3 style="margin:2px 0 6px">{s.title}</h3>
-              <div class="muted" style="font-size:12.5px;margin-bottom:8px">{s.rationale}</div>
-              {s.source && <div class="muted" style="font-size:11px;margin-bottom:8px">fuente: {s.source}</div>}
+              {s.rationale && (
+                <button
+                  class="chip small"
+                  style="margin-bottom:8px"
+                  onClick={() => setWhyId(whyId === s.id ? null : s.id)}
+                  title="ver por qué el agente propuso esto"
+                >
+                  <span class="msr" style="font-size:13px">{whyId === s.id ? 'expand_less' : 'help'}</span>¿Por qué?
+                </button>
+              )}
+              {whyId === s.id && (
+                <div class="muted" style="font-size:12.5px;margin-bottom:8px">
+                  {s.rationale}{s.source ? ` (fuente: ${s.source})` : ''}
+                </div>
+              )}
               {prev && <div class="chip small" style="margin-bottom:12px"><span class="msr" style="font-size:13px">bolt</span>{prev}</div>}
               {asking === s.id ? (
                 <div>
