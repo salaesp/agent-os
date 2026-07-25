@@ -200,10 +200,18 @@ input { font: inherit; }
 .src-chip.src-whatsapp, .src-chip.src-whatsapp_cloud { background: rgba(37,211,102,.12); border-color: rgba(37,211,102,.38); color: #4bd07a; }
 .src-chip.src-cli, .src-chip.src-api { color: var(--gold); border-color: rgba(200,164,90,.4); }
 .chat-main { min-width: 0; }
+/* Oculto por default; en mobile hace de "abrir en popup" para paneles que en
+   desktop van siempre visibles (ej. la lista de conversaciones del chat). */
+.show-mobile { display: none; }
 @media (max-width: 720px) {
   .chat-layout { grid-template-columns: 1fr; height: auto; }
-  .chat-convos { max-height: 200px; }
-  .chat-main { height: calc(100vh - 260px); }
+  /* La lista de conversaciones ocupaba la mitad de la pantalla en mobile;
+     ahora vive en la hoja "Conversaciones" (mismo patrón que el nav "Más")
+     y acá solo queda el chat. */
+  .chat-sidebar { display: none; }
+  .chat-main { height: calc(100vh - 200px); }
+  .show-mobile { display: inline-flex; }
+  .sheet-panel .chat-convos { max-height: 50vh; }
 }
 
 /* ---------------- Consola (xterm) ---------------- */

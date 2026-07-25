@@ -15,6 +15,7 @@ export function Chat() {
   const [busy, setBusy] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
   const [loadingHist, setLoadingHist] = useState(false);
+  const [convosOpen, setConvosOpen] = useState(false);
   const endRef = useRef(null);
   const midRef = useRef(0);
   const nextId = () => ++midRef.current;
@@ -23,18 +24,18 @@ export function Chat() {
 
   const loadSessions = (prof) => get(`/api/sessions?profile=${encodeURIComponent(prof)}`).then(setSessions).catch(() => setSessions([]));
   useEffect(() => { loadSessions(profile); }, [profile]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs, busy]);
+  useEffect(() => { if (msgs.length) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [msgs, busy]);
 
   useEffect(() => {
     const sid = routeParam('session'); const prof = routeParam('profile');
     if (sid) { const p = prof || '(default)'; setProfile(p); openSession({ id: sid }, p); }
   }, []);
 
-  const newConversation = () => { if (busy) return; setActiveId(null); setMsgs([]); };
+  const newConversation = () => { if (busy) return; setActiveId(null); setMsgs([]); setConvosOpen(false); };
 
   const openSession = async (s, prof = profile) => {
     if (busy) return;
-    setActiveId(s.id); setLoadingHist(true); setMsgs([]);
+    setActiveId(s.id); setLoadingHist(true); setMsgs([]); setConvosOpen(false);
     try {
       const rows = await get(`/api/sessions/messages?profile=${encodeURIComponent(prof)}&id=${encodeURIComponent(s.id)}`);
       setMsgs(rows.map((m) => ({ id: nextId(), role: m.role === 'assistant' ? 'agent' : 'user', text: m.text })));
@@ -92,36 +93,58 @@ export function Chat() {
 
   const convoTitle = (s) => s.preview || `${personaLabel(s.source)} · ${s.startedAt ? relTs(s.startedAt) : ''}`;
 
+  const tasksCount = sessions.filter((s) => s.kind === 'task').length;
+  const convoList = (
+    <>
+      <button class="chat-new" disabled={busy} onClick={newConversation}><span class="msr" style="font-size:18px">add</span>Nueva conversación</button>
+      <select class="chat-persona" value={profile} disabled={busy} onChange={(e) => { setProfile(e.target.value); newConversation(); }}>
+        {profiles.map((p) => <option value={p} key={p}>{personaLabel(p)}</option>)}
+      </select>
+      {tasksCount > 0 && (
+        <button class={`chat-tasks-toggle ${showTasks ? 'on' : ''}`} disabled={busy} onClick={() => setShowTasks((v) => !v)}>
+          <span class="msr" style="font-size:15px">{showTasks ? 'visibility_off' : 'bolt'}</span>
+          {showTasks ? 'Ocultar tareas' : `Ver tareas (${tasksCount})`}
+        </button>
+      )}
+      <div class="chat-convos">
+        {(() => { const shown = sessions.filter((s) => showTasks || s.kind !== 'task'); return <>
+        {shown.length === 0 && <div class="muted" style="font-size:12px;padding:8px">Sin conversaciones.</div>}
+        {shown.map((s) => (
+          <button class={`chat-convo ${activeId === s.id ? 'active' : ''}`} disabled={busy} onClick={() => openSession(s)} key={s.id}>
+            <div class="row" style="gap:6px;margin-bottom:2px">
+              {s.source && <span class={`src-chip src-${s.source}`}>{srcLabel(s.source)}</span>}
+              <span class="t" style="flex:1">{convoTitle(s)}</span>
+            </div>
+            <div class="m">{s.messageCount} msgs{s.grouped && s.threads > 1 ? ` · ${s.threads} hilos` : ''}{s.startedAt ? ` · ${relTs(s.startedAt)}` : ''}</div>
+          </button>
+        ))}
+        </>; })()}
+      </div>
+    </>
+  );
+
   return (
     <>
-      <PageHead title="Chat" sub={busy ? 'el agente está respondiendo…' : `hablando con ${personaLabel(profile)}`} />
+      <PageHead title="Chat" sub={busy ? 'el agente está respondiendo…' : `hablando con ${personaLabel(profile)}`}>
+        <button class="chip show-mobile" onClick={() => setConvosOpen(true)}>
+          <span class="msr" style="font-size:16px">forum</span>Conversaciones{sessions.length > 0 ? ` (${sessions.length})` : ''}
+        </button>
+      </PageHead>
       <div class="chat-layout">
-        <aside class="chat-sidebar">
-          <button class="chat-new" disabled={busy} onClick={newConversation}><span class="msr" style="font-size:18px">add</span>Nueva conversación</button>
-          <select class="chat-persona" value={profile} disabled={busy} onChange={(e) => { setProfile(e.target.value); newConversation(); }}>
-            {profiles.map((p) => <option value={p} key={p}>{personaLabel(p)}</option>)}
-          </select>
-          {(() => { const tasks = sessions.filter((s) => s.kind === 'task').length; return tasks > 0 ? (
-            <button class={`chat-tasks-toggle ${showTasks ? 'on' : ''}`} disabled={busy} onClick={() => setShowTasks((v) => !v)}>
-              <span class="msr" style="font-size:15px">{showTasks ? 'visibility_off' : 'bolt'}</span>
-              {showTasks ? 'Ocultar tareas' : `Ver tareas (${tasks})`}
-            </button>
-          ) : null; })()}
-          <div class="chat-convos">
-            {(() => { const shown = sessions.filter((s) => showTasks || s.kind !== 'task'); return <>
-            {shown.length === 0 && <div class="muted" style="font-size:12px;padding:8px">Sin conversaciones.</div>}
-            {shown.map((s) => (
-              <button class={`chat-convo ${activeId === s.id ? 'active' : ''}`} disabled={busy} onClick={() => openSession(s)} key={s.id}>
-                <div class="row" style="gap:6px;margin-bottom:2px">
-                  {s.source && <span class={`src-chip src-${s.source}`}>{srcLabel(s.source)}</span>}
-                  <span class="t" style="flex:1">{convoTitle(s)}</span>
-                </div>
-                <div class="m">{s.messageCount} msgs{s.grouped && s.threads > 1 ? ` · ${s.threads} hilos` : ''}{s.startedAt ? ` · ${relTs(s.startedAt)}` : ''}</div>
-              </button>
-            ))}
-            </>; })()}
+        <aside class="chat-sidebar">{convoList}</aside>
+
+        {convosOpen && (
+          <div class="sheet-scrim" onClick={() => setConvosOpen(false)}>
+            <div class="sheet-panel" onClick={(e) => e.stopPropagation()}>
+              <div class="sheet-grabber" />
+              <div class="spread" style="margin-bottom:10px">
+                <h3 style="margin:0">Conversaciones</h3>
+                <button class="chip" onClick={() => setConvosOpen(false)}><span class="msr" style="font-size:16px">close</span></button>
+              </div>
+              {convoList}
+            </div>
           </div>
-        </aside>
+        )}
 
         <div class="chat-main card" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
           <div style="flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px">

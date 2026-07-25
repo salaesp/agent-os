@@ -10,7 +10,7 @@
 // El PTY hace falta porque `tmux attach` exige un tty y Node no puede abrir uno sin
 // una dependencia nativa (node-pty). `script` ya viene con util-linux.
 import { spawn, execFile } from 'node:child_process';
-import { readdir, readFile, readlink } from 'node:fs/promises';
+import { readdir, readFile, readlink, stat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
@@ -42,7 +42,18 @@ export async function listWorkspaces() {
   add(selfDir);
   let entries = [];
   try { entries = await readdir(root, { withFileTypes: true }); } catch { /* sin ~/code */ }
-  for (const e of entries) if (e.isDirectory() && !e.name.startsWith('.')) add(join(root, e.name));
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    const path = join(root, e.name);
+    // readdir con withFileTypes no resuelve symlinks: Dirent.isDirectory() da
+    // false para un symlink aunque apunte a una carpeta real (ej. ~/code/juli-app
+    // -> /home/juli/code/juli-app). Para esos casos hay que resolver con stat().
+    if (e.isDirectory()) add(path);
+    else if (e.isSymbolicLink()) {
+      const target = await stat(path).catch(() => null);
+      if (target?.isDirectory()) add(path);
+    }
+  }
   return [...out.values()].sort((a, b) => (a.path === selfDir ? -1 : b.path === selfDir ? 1 : a.name.localeCompare(b.name)));
 }
 
