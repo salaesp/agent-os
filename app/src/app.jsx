@@ -141,12 +141,14 @@ export function App() {
               {GROUPS.map((g) => (
                 <div class="nav-group" key={g.label}>
                   <div class="side-label">{g.label}</div>
-                  {g.items.map((v) => (
-                    <a class={`nav-item ${view === v.id ? 'active' : ''}`} href={`#/${v.id}`} key={v.id}>
-                      <span class="msr">{v.icon}</span>
-                      <span class="label">{v.label}</span>
-                    </a>
-                  ))}
+                  <div class="nav-card">
+                    {g.items.map((v) => (
+                      <a class={`nav-item ${view === v.id ? 'active' : ''}`} href={`#/${v.id}`} key={v.id}>
+                        <span class="msr">{v.icon}</span>
+                        <span class="label">{v.label}</span>
+                      </a>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>

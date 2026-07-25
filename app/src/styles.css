@@ -244,9 +244,12 @@ input { font: inherit; }
   background: var(--panel);
 }
 .sheet-grabber { width: 36px; height: 4px; border-radius: var(--radius-full); background: var(--hairline-strong); margin: 2px auto 12px; }
-.sheet-panel .side-label { padding: 0 4px 6px; }
-.sheet-panel .nav-group { background: var(--panel-2); border: 1px solid var(--hairline); border-radius: var(--radius-m); overflow: hidden; }
+/* El título de grupo vive AFUERA de la tarjeta (como en iOS Settings), no
+   pegado a su borde redondeado — si no, con el overflow:hidden de la
+   tarjeta queda comido por la curva de la esquina. */
+.sheet-panel .side-label { padding: 0 14px 8px; }
 .sheet-panel .nav-group + .nav-group { margin-top: 18px; }
+.sheet-panel .nav-card { background: var(--panel-2); border: 1px solid var(--hairline); border-radius: var(--radius-m); overflow: hidden; }
 .sheet-panel .nav-item { border-radius: 0; margin-bottom: 0; padding: 11px 14px; }
 .sheet-panel .nav-item + .nav-item { border-top: 1px solid var(--hairline); }
 .sheet-panel .nav-item.active { background: var(--accent-soft); color: var(--accent); }
