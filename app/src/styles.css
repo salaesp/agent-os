@@ -76,7 +76,7 @@ input { font: inherit; }
 .titlebar .icon-btn:hover { background: var(--panel-2); color: var(--text); }
 
 /* ---------------- Layout ---------------- */
-.shell { display: grid; grid-template-columns: 232px 1fr; flex: 1; min-height: 0; }
+.shell { display: grid; grid-template-columns: 232px 1fr; flex: 1; min-height: 0; min-width: 0; }
 .sidebar {
   position: sticky; top: 46px; align-self: start; height: calc(100vh - 46px); overflow-y: auto;
   background: var(--sidebar); backdrop-filter: saturate(180%) blur(24px); -webkit-backdrop-filter: saturate(180%) blur(24px);
@@ -98,7 +98,7 @@ input { font: inherit; }
 .sidebar .spacer { flex: 1; }
 .sidebar .caduceus-wrap { opacity: .5; display: grid; place-items: center; padding: 8px 0 2px; }
 
-.content { padding: 22px clamp(16px, 3vw, 36px) 60px; max-width: 1160px; width: 100%; }
+.content { padding: 22px clamp(16px, 3vw, 36px) 60px; max-width: 1160px; width: 100%; min-width: 0; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 2px 0 20px; }
 .page-head h1 { font-size: 25px; font-weight: 700; margin: 0; letter-spacing: -.02em; }
 .page-head .sub { color: var(--text-2); font-size: 13px; margin-top: 2px; }
@@ -107,7 +107,7 @@ input { font: inherit; }
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .card {
   background: var(--panel); border: 1px solid var(--hairline); border-radius: var(--radius-l);
-  padding: 15px 17px; box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  padding: 15px 17px; box-shadow: 0 1px 2px rgba(0,0,0,.05); min-width: 0;
 }
 .card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
 .muted, .card .muted { color: var(--text-2); }
@@ -171,7 +171,7 @@ input { font: inherit; }
 
 /* ---------------- Chat (layout tipo ChatGPT) ---------------- */
 .chat-layout { display: grid; grid-template-columns: 256px 1fr; gap: 14px; height: calc(100vh - 128px); }
-.chat-sidebar { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.chat-sidebar { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
 .chat-persona {
   width: 100%; padding: 9px 12px; border-radius: var(--radius-m); font: inherit; font-weight: 500;
   background: var(--panel); color: inherit; border: 1px solid var(--hairline);
@@ -187,7 +187,7 @@ input { font: inherit; }
 }
 .chat-convo:hover { background: var(--panel-2); }
 .chat-convo.active { background: var(--panel-2); border-color: var(--hairline); }
-.chat-convo .t { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-convo .t { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .chat-convo .m { font-size: 10.5px; color: var(--text-3); }
 .chat-tasks-toggle { display: flex; align-items: center; gap: 6px; width: 100%; margin-bottom: 6px; padding: 6px 9px; font-size: 11.5px; font-weight: 500; color: var(--text-2); background: transparent; border: 1px solid var(--hairline); border-radius: var(--radius); cursor: pointer; }
 .chat-tasks-toggle:hover { background: var(--panel-2); }
@@ -232,22 +232,73 @@ input { font: inherit; }
 :root:not([data-theme="dark"]) .hero { background: linear-gradient(180deg, #1b1b1d, #262628); }
 .hero .tag { color: var(--gold-2); font-family: var(--mono); font-size: 12px; letter-spacing: .04em; margin-top: 8px; }
 
+.mobile-only { display: none; }
+
+/* Hoja "Más" del nav mobile: overlay sólido (mismo scrim que los modales de
+   Kanban/Docs) con un panel tipo "lista agrupada" de iOS Settings — grupos
+   como tarjetas separadas con filas divididas por hairline, no una lista plana. */
+.sheet-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 61; display: grid; align-items: end; justify-items: center; }
+.sheet-panel {
+  width: 100%; max-height: 78vh; overflow: auto; border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow: var(--shadow); padding: 10px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel);
+}
+.sheet-grabber { width: 36px; height: 4px; border-radius: var(--radius-full); background: var(--hairline-strong); margin: 2px auto 12px; }
+.sheet-panel .side-label { padding: 0 4px 6px; }
+.sheet-panel .nav-group { background: var(--panel-2); border: 1px solid var(--hairline); border-radius: var(--radius-m); overflow: hidden; }
+.sheet-panel .nav-group + .nav-group { margin-top: 18px; }
+.sheet-panel .nav-item { border-radius: 0; margin-bottom: 0; padding: 11px 14px; }
+.sheet-panel .nav-item + .nav-item { border-top: 1px solid var(--hairline); }
+.sheet-panel .nav-item.active { background: var(--accent-soft); color: var(--accent); }
+.sheet-panel .nav-item.active .msr { color: var(--accent); font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24; }
+
 @media (max-width: 720px) {
   .shell { grid-template-columns: 1fr; }
+  /* Barra flotante tipo "cápsula", despegada del borde inferior (no una tira
+     pegada a todo el ancho). Fondo sólido oscuro fijo — no depende del tema
+     claro/oscuro de la app, es "chrome" flotante sobre el contenido, como un
+     dock — y sin blur, elevación solo por sombra. */
   .sidebar {
-    position: fixed; bottom: 0; top: auto; height: auto; width: 100%; z-index: 30; flex-direction: row;
-    border-right: none; border-top: 1px solid var(--hairline); overflow-x: auto; padding: 8px; gap: 4px;
+    position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+    top: auto; height: auto; width: auto; max-width: calc(100% - 24px); z-index: 30; flex-direction: row;
+    justify-content: center; align-items: center; border: none; border-radius: var(--radius-full);
+    padding: 6px; gap: 2px;
+    background: #1c1c1e; backdrop-filter: none; -webkit-backdrop-filter: none;
+    box-shadow: 0 12px 30px -8px rgba(0,0,0,.55), 0 2px 10px rgba(0,0,0,.35);
   }
-  .side-label, .nav-item .label, .nav-badge, .sidebar .spacer, .sidebar .caduceus-wrap { display: none; }
+  /* Todo lo que sigue está scopeado a ".sidebar": la hoja "Más" reutiliza
+     .nav-group/.nav-item pero fuera del sidebar, y tiene que conservar el
+     layout normal (fila, con label) en vez del de la barra flotante. */
+  .sidebar .side-label, .sidebar .nav-badge, .sidebar .spacer, .sidebar .caduceus-wrap { display: none; }
   /* Los grupos se disuelven: sin esto cada uno sería una columna dentro del
      flex-row y la barra inferior se rompía en bloques apilados. */
-  .nav-group, .nav-group + .nav-group { display: contents; margin-top: 0; }
-  .nav-item { flex-direction: column; gap: 2px; padding: 6px 10px; min-width: 56px; }
+  .sidebar .nav-group, .sidebar .nav-group + .nav-group { display: contents; margin-top: 0; }
+  /* Dock: solo íconos por default (color claro fijo, el fondo de la cápsula
+     siempre es oscuro); el ítem activo se convierte en una pastilla con
+     ícono + texto en color de acento — el resto queda como círculos chicos. */
+  .sidebar .nav-item {
+    flex-direction: row; gap: 6px; width: auto; flex: none; margin-bottom: 0;
+    padding: 10px; border-radius: var(--radius-full); color: rgba(255,255,255,.55);
+    transition: background .16s var(--ease), color .16s var(--ease), padding .16s var(--ease);
+  }
+  .sidebar .nav-item .msr { font-size: 21px; color: inherit; }
+  .sidebar .nav-item .label { display: none; font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; color: inherit; }
+  .sidebar .nav-item:hover { background: rgba(255,255,255,.08); }
+  .sidebar .nav-item.active {
+    background: var(--accent); color: #1b1b1d; padding: 10px 16px 10px 12px;
+  }
+  .sidebar .nav-item.active:hover { background: var(--accent); }
+  .sidebar .nav-item.active .msr { color: #1b1b1d; font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24; }
+  .sidebar .nav-item.active .label { display: inline; }
+  /* Solo 4 destinos + "Más" entran sin desbordar: el resto se oculta acá y
+     vive en la hoja de abajo (misma lista que el sidebar completo). */
+  .sidebar .nav-item.mobile-hide { display: none; }
+  .sidebar .nav-item.mobile-only { display: flex; }
   .titlebar-title { display: none; }
-  .content { padding-bottom: 96px; }
-  /* El header de página y los controles segmentados wrapean en vez de desbordar. */
+  .content { padding-bottom: 104px; }
+  /* El header de página y los controles segmentados/de fila wrapean en vez de desbordar. */
   .page-head { flex-wrap: wrap; }
-  .seg { flex-wrap: wrap; }
+  .seg, .row { flex-wrap: wrap; }
 }
 
 /* Celular angosto: forzar 1 columna en TODOS los grids (aunque tengan minmax inline),

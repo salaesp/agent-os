@@ -67,12 +67,18 @@ const GROUPS = [
 // Plano, para el routing: los grupos son presentación, no estructura de rutas.
 const VIEWS = GROUPS.flatMap((g) => g.items);
 
+// En mobile la barra inferior solo tiene lugar para ~5 íconos sin desbordar:
+// se muestran los más usados y el resto vive detrás de "Más".
+const MOBILE_PRIMARY_IDS = ['overview', 'chat', 'kanban', 'suggestions'];
+const mobileMoreIds = new Set(VIEWS.map((v) => v.id).filter((id) => !MOBILE_PRIMARY_IDS.includes(id)));
+
 export function App() {
   const [hash, setHash] = useState(location.hash);
   const [theme, setTheme] = useState(document.documentElement.getAttribute('data-theme') || 'dark');
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
-    const onHash = () => setHash(location.hash);
+    const onHash = () => { setHash(location.hash); setMoreOpen(false); };
     addEventListener('hashchange', onHash);
     return () => removeEventListener('hashchange', onHash);
   }, []);
@@ -102,16 +108,50 @@ export function App() {
             <div class="nav-group" key={g.label}>
               <div class="side-label">{g.label}</div>
               {g.items.map((v) => (
-                <a class={`nav-item ${view === v.id ? 'active' : ''}`} href={`#/${v.id}`} key={v.id}>
+                <a
+                  class={`nav-item ${view === v.id ? 'active' : ''} ${mobileMoreIds.has(v.id) ? 'mobile-hide' : ''}`}
+                  href={`#/${v.id}`}
+                  key={v.id}
+                >
                   <span class="msr">{v.icon}</span>
                   <span class="label">{v.label}</span>
                 </a>
               ))}
             </div>
           ))}
+          <button
+            type="button"
+            class={`nav-item mobile-only ${moreOpen || mobileMoreIds.has(view) ? 'active' : ''}`}
+            onClick={() => setMoreOpen((o) => !o)}
+          >
+            <span class="msr">more_horiz</span>
+            <span class="label">Más</span>
+          </button>
           <div class="spacer" />
           <div class="caduceus-wrap"><HermesCaduceus /></div>
         </nav>
+        {moreOpen && (
+          <div class="sheet-scrim" onClick={() => setMoreOpen(false)}>
+            <div class="sheet-panel" onClick={(e) => e.stopPropagation()}>
+              <div class="sheet-grabber" />
+              <div class="spread" style="margin-bottom:10px">
+                <h3 style="margin:0">Más</h3>
+                <button class="chip" onClick={() => setMoreOpen(false)}><span class="msr" style="font-size:16px">close</span></button>
+              </div>
+              {GROUPS.map((g) => (
+                <div class="nav-group" key={g.label}>
+                  <div class="side-label">{g.label}</div>
+                  {g.items.map((v) => (
+                    <a class={`nav-item ${view === v.id ? 'active' : ''}`} href={`#/${v.id}`} key={v.id}>
+                      <span class="msr">{v.icon}</span>
+                      <span class="label">{v.label}</span>
+                    </a>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <main class="content">
           <Active key={hash} />
         </main>
