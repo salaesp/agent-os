@@ -104,7 +104,7 @@ Respondé EXCLUSIVAMENTE con un array JSON de 3 items, sin markdown ni texto ext
 [{"title":"qué hacer, en una frase accionable","rationale":"por qué esta y no otra, mencionando el ángulo del que salió","action_type":"kanban|goal|goal_progress|none","action_payload":{…},"novelty":0-100,"viability":0-100,"fit":0-100,"obvious":true|false}]
 
 action_payload según action_type:
-- kanban: {"title":"…","body":"pasos concretos","board":"default"}
+- kanban: {"title":"…","body":"pasos concretos","board":"default|research"}   (usá "research" si es investigar/analizar antes de poder ejecutar, no una tarea de dev directa; "default" si no)
 - goal: {"title":"…","brief":"…","my_role":"…","agent_role":"…"}   (sólo si la idea es un objetivo NUEVO de mediano plazo, no una tarea)
 - goal_progress: {"goalTitle":"${goal.title}","progress":0-100,"note":"por qué ese %"}
 - none: {}`;

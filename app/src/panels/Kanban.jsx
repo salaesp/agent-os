@@ -16,6 +16,7 @@ export function Kanban() {
   const [msg, setMsg] = useState(null);
   const [board, setBoard] = useState('todos');
   const [hideArchived, setHideArchived] = useState(true);
+  const [investigating, setInvestigating] = useState(false);
 
   if (loading) return <Loading />;
   if (error) return <><PageHead title="Kanban" /><ErrorBox error={error} /></>;
@@ -35,6 +36,16 @@ export function Kanban() {
     finally { setBusy(false); }
   };
 
+  const investigateNow = async () => {
+    setInvestigating(true); setMsg(null);
+    try {
+      const r = await post('/api/investigate', {});
+      setMsg({ ok: true, text: `${r.processed} tarea(s) investigada(s), ${r.created} sugerencia(s) nueva(s)` });
+      reload();
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    finally { setInvestigating(false); }
+  };
+
   return (
     <>
       <PageHead title="Kanban" sub={`${data.total} tareas · ${boards.length} boards · ${data.projects.length} proyectos`}>
@@ -48,6 +59,11 @@ export function Kanban() {
         <button class={`chip small filter-chip ${board === 'todos' ? 'on' : ''}`} onClick={() => setBoard('todos')}>todos</button>
         {boards.map((b) => <button class={`chip small filter-chip ${board === b ? 'on' : ''}`} onClick={() => setBoard(b)} key={b}>{b}</button>)}
         <div style="flex:1" />
+        {board === 'research' && (
+          <button class="chip small" disabled={investigating} onClick={investigateNow} title="Investigar ahora las tareas pendientes de este board">
+            {investigating ? 'Investigando…' : 'Investigar ahora'}
+          </button>
+        )}
         <label class="row" style="font-size:12px;cursor:pointer"><input type="checkbox" checked={hideArchived} onChange={(e) => setHideArchived(e.target.checked)} /> ocultar archivadas</label>
       </div>
 

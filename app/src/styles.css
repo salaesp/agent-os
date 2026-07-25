@@ -207,10 +207,7 @@ input { font: inherit; }
 }
 
 /* ---------------- Consola (xterm) ---------------- */
-/* El padding derecho lleva unos px de más a propósito: FitAddon redondea con un
-   ancho de carácter que difiere por decimales del que termina dibujando el
-   renderer, y sin holgura la última columna queda recortada 2-3px. */
-.console-host { flex: 1; min-height: 0; padding: 8px 18px 6px 10px; background: var(--bg); }
+.console-host { flex: 1; min-height: 0; padding: 8px 10px 6px; background: var(--bg); }
 /* La barra de scroll nativa de xterm ocupa ~15px que FitAddon NO descuenta al
    calcular las columnas: la última columna de texto termina dibujada debajo de la
    barra. La ocultamos (la rueda y Shift+PgUp siguen scrolleando) y el aire de la

@@ -71,10 +71,6 @@ export function Console() {
     });
   };
 
-  // Remide la terminal y propaga el tamaño al PTY del server. Es lo que mantiene
-  // alineado el ancho de Claude con el del contenedor: si el PTY es más chico que
-  // xterm, tmux manda solo el recorte que entra y la consola se ve cortada.
-  // Si el stream todavía no dio el token, el tamaño ya viaja en la URL del attach.
   // Altura de la tarjeta = lo que queda de viewport, medido. Un `calc(100vh - N)`
   // a ojo no sirve: hay que descontar el encabezado (que cambia de alto según el
   // texto) y el padding inferior de `.content`, o la consola termina unos píxeles
@@ -93,6 +89,25 @@ export function Console() {
     if (el.style.height !== px) el.style.height = px; // idempotente: no realimenta al observer
   };
 
+  // FitAddon divide el ancho disponible por un ancho de carácter que difiere en
+  // decimales del que termina dibujando el renderer, así que a veces se pasa por
+  // una fracción de columna y la última queda recortada contra el borde. Sumar
+  // padding "de holgura" no sirve: la relación es en diente de sierra y puede
+  // empeorar. Se mide lo dibujado y, si excede, se saca una columna.
+  const trimOverflowingColumn = () => {
+    const term = termRef.current;
+    const box = term?.element;                       // el div .xterm: es el que recorta
+    const screen = box?.querySelector('.xterm-screen');
+    if (!box || !screen) return;
+    if (screen.getBoundingClientRect().width > box.clientWidth + 0.5 && term.cols > 20) {
+      term.resize(term.cols - 1, term.rows);
+    }
+  };
+
+  // Remide todo y propaga el tamaño final al PTY del server. Es lo que mantiene
+  // alineado el ancho de Claude con el del contenedor: si el PTY es más chico que
+  // xterm, tmux manda solo el recorte que entra y la consola se ve cortada.
+  // Si el stream todavía no dio el token, el tamaño ya viaja en la URL del attach.
   const applyFit = (force = false) => {
     const term = termRef.current;
     if (!term || !fitRef.current) return;
@@ -100,6 +115,7 @@ export function Console() {
     fitT.current = setTimeout(() => {
       sizeCard();
       try { fitRef.current.fit(); } catch { return; } // panel oculto: sin dimensiones
+      trimOverflowingColumn();
       const size = `${term.cols}x${term.rows}`;
       setDims(size);
       if (!force && size === sentSize.current) return;

@@ -115,7 +115,7 @@ Respondé EXCLUSIVAMENTE con un objeto JSON, sin markdown ni texto extra:
 {"title":"qué hacer, en una frase accionable","rationale":"por qué vale la pena, atado a la idea original","action_type":"kanban|goal","action_payload":{…},"score":0-100}
 
 action_payload:
-- kanban: {"title":"…","body":"los pasos concretos","board":"default"}
+- kanban: {"title":"…","body":"los pasos concretos","board":"default|research"}   (usá "research" si es investigar/analizar antes de poder ejecutar, no una tarea de dev directa; "default" si no)
 - goal: {"title":"…","brief":"…","my_role":"…","agent_role":"…"}`;
 
   const gen = await adapter.generateRawSuggestions(prompt, { timeout: 120_000 });

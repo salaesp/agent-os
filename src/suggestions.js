@@ -56,7 +56,7 @@ Sub-scores (0-100): relevance = qué tan relevante para el usuario ahora; knowle
 
 action_payload según action_type:
 - cron/reminder: {"schedule":"0 9 * * * | 30m | 2026-08-01 09:00","prompt":"instrucción","name":"nombre","deliver":"local|discord|slack|telegram"}
-- kanban: {"title":"…","body":"…","board":"default"}
+- kanban: {"title":"…","body":"…","board":"default|research"}   (usá "research" si la tarea es INVESTIGAR/analizar/recopilar información —no es algo que el equipo de dev pueda ejecutar directo—; "default" para tareas de desarrollo ejecutables)
 - memory: {"which":"user|memory","text":"línea a recordar"}
 - goal: {"title":"…","brief":"…","my_role":"…","agent_role":"…"}   (proponé un OBJETIVO de mediano plazo si detectás una meta grande)
 - goal_progress: {"goalTitle":"título EXACTO de un objetivo activo del contexto","progress":0-100,"note":"por qué ese %"}   (si notás avance en un objetivo existente)

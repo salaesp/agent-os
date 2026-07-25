@@ -12,6 +12,7 @@ import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
 import { generateDreams, promoteDream, promotingDreams } from './dreamer.js';
 import { ideateForGoals } from './ideator.js';
+import { runInvestigations } from './investigator.js';
 import { listDreams, setDreamStatus, getSuggestion, startRun, endRun, listDecisions, listRuns, getDecisionChain } from './db.js';
 import { consolidateREM } from './rem.js';
 import { startScheduler } from './scheduler.js';
@@ -271,6 +272,13 @@ const handler = async (req, res) => {
       // de Sugerencias, ya accionable (kanban/goal/goal_progress).
       if (path === '/api/ideate') {
         const r = await ideateForGoals(adapter, { goalId: body.goalId || null });
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400));
+      }
+      // Investigador manual: procesa tareas pendientes del board "research" ahora
+      // mismo, sin esperar la corrida nocturna.
+      if (path === '/api/investigate') {
+        const r = await runInvestigations(adapter);
         cache.clear();
         return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400));
       }

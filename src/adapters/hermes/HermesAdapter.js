@@ -341,6 +341,16 @@ export class HermesAdapter {
     return { ok: true, newSkills, updatedExisting: newSkills.length === 0, response: r.stdout };
   }
 
+  // Investigación con herramientas reales (web/file/terminal) — a diferencia de
+  // generateRawSuggestions (tool-free a propósito), esto SÍ puede buscar y leer.
+  // Lo usa investigator.js para procesar tareas del board "research".
+  async research(profile, prompt, { timeout = 400_000 } = {}) {
+    if (!prompt || !String(prompt).trim()) return { ok: false, error: 'prompt vacío' };
+    const r = await this._run(profile, ['chat', '-q', String(prompt), '-Q', '-t', 'skills,file,web,terminal'], { timeout });
+    if (!r.ok) return { ok: false, error: r.stderr || r.stdout };
+    return { ok: true, text: r.stdout };
+  }
+
   // Push a un canal sin pasar por el LLM (entrega proactiva).
   async pushMessage(platform, text) {
     if (!platform || !text) return { ok: false, stderr: 'plataforma y texto requeridos' };

@@ -8,6 +8,7 @@ import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
 import { generateDreams } from './dreamer.js';
 import { ideateForGoals } from './ideator.js';
+import { runInvestigations } from './investigator.js';
 import { consolidateREM } from './rem.js';
 import { getSetting, setSetting, localDay, purgeTrail } from './db.js';
 
@@ -137,6 +138,15 @@ async function maybeNightly(adapter) {
         const i = await ideateForGoals(adapter);
         if (!i.ok) throw new Error(i.error || 'sin detalle');
         return `${i.created} ideas sobre «${i.goal}»`;
+      });
+    }
+    // Investigador: procesa tareas del board "research" (investigación, no dev)
+    // con herramientas reales (web). Cara igual que la ideación → arranca APAGADA.
+    if (getSetting('auto_investigate_enabled', '0') === '1') {
+      await step('investigador', async () => {
+        const r = await runInvestigations(adapter);
+        if (!r.ok) throw new Error(r.error || 'sin detalle');
+        return `${r.processed} tarea(s) investigada(s), ${r.created} sugerencia(s) nueva(s)`;
       });
     }
     // REM va ÚLTIMO: consolida el día anterior leyendo todo lo que los pasos de

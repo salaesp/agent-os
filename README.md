@@ -102,6 +102,15 @@ xterm.js ──SSE (/api/term/attach)──► script -qfec "tmux attach" ──
   el attach hace `stty rows/cols` con la medida del browser antes del `tmux attach`, y
   cada resize posterior es un `stty -F <pty del cliente>` (el tty se resuelve por
   `/proc/<pid>/task/<pid>/children` → `fd/0`). tmux queda en `window-size latest`.
+- **Dos detalles del lado del browser**, ambos medidos en Chromium headless por CDP
+  (`--remote-debugging-port` + `Runtime.evaluate`), no a ojo:
+  la altura de la tarjeta se **mide** (`innerHeight − top − padding-bottom de .content`)
+  porque un `calc(100vh - N)` a ojo deja la consola unos px por debajo del contenedor; y
+  la barra de scroll de xterm se oculta, porque ocupa ~15px que FitAddon no descuenta al
+  calcular columnas y la última columna de texto termina dibujada **debajo** de la barra.
+  Del redondeo sub-carácter se encarga `trimOverflowingColumn()`: mide lo dibujado y saca
+  una columna si se pasa (sumar padding de holgura no sirve — la relación es en diente de
+  sierra y puede empeorar).
 - **Alcance acotado**: el proceso de la sesión es `claude`, no una shell. Los workspaces
   son una allowlist — subdirectorios directos de `CODE_GRAPH_ROOT` (`~/code`) más el
   propio Agent OS; un `workspace` que no esté en esa lista se rechaza.
