@@ -144,6 +144,9 @@ function TaskModal({ task, busy, mutate, onClose }) {
       if (a === 'archive') onClose(); else refresh();
     }
   };
+  const runNow = async () => {
+    if (await mutate('/api/kanban/run-now', req, 'coder disparado — mirá "ejecuciones" en unos minutos')) refresh();
+  };
   const sendComment = async () => {
     if (!draft.trim()) return;
     if (await mutate('/api/kanban/comment', { ...req, text: draft }, 'comentario agregado')) {
@@ -185,6 +188,11 @@ function TaskModal({ task, busy, mutate, onClose }) {
         </div>
 
         <div class="wrap" style="padding-bottom:10px;border-bottom:1px solid var(--hairline)">
+          {task.board === 'default' && !['running', 'done', 'archived'].includes(t.status) && (
+            <button class="chip small filter-chip on" disabled={busy} onClick={runNow} title="Asigna la tarea al perfil coder y dispara el pipeline coder→reviewer ahora, sin esperar al tick nocturno. El merge a main es automático si pasa la revisión.">
+              <span class="msr" style="font-size:14px">bolt</span>Ejecutar con Claude Code
+            </button>
+          )}
           {t.status !== 'done' && <button class="chip small" disabled={busy} onClick={() => act('complete')}><span class="msr" style="font-size:14px">check</span>Completar</button>}
           {t.status !== 'blocked'
             ? <button class="chip small" disabled={busy} onClick={() => act('block')}><span class="msr" style="font-size:14px">block</span>Bloquear</button>
@@ -270,7 +278,7 @@ function TaskModal({ task, busy, mutate, onClose }) {
                           {r.summary && <div style="font-size:12.5px;white-space:pre-wrap;margin-bottom:6px">{r.summary}</div>}
                           {r.error && <pre style="white-space:pre-wrap;font-family:var(--mono);font-size:11px;color:var(--err);margin-bottom:6px">{String(r.error).slice(0, 800)}</pre>}
                           <div class="wrap" style="font-size:11px">
-                            {meta.pr_url && <a class="chip small" href={meta.pr_url} target="_blank" rel="noreferrer"><span class="msr" style="font-size:13px">merge</span>PR #{meta.pr_number || ''}</a>}
+                            {meta.pr_url && <a class="chip small" href={meta.pr_url} target="_blank" rel="noreferrer" title="se mergea solo a main si pasa la revisión y los tests"><span class="msr" style="font-size:13px">merge</span>PR #{meta.pr_number || ''}</a>}
                             {meta.branch && <span class="chip small mono">{meta.branch}</span>}
                             {meta.commit && <span class="chip small mono">{String(meta.commit).slice(0, 8)}</span>}
                             {meta.tests_run != null && <span class="chip small">tests {meta.tests_passed ?? '?'}/{meta.tests_run}</span>}

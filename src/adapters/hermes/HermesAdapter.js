@@ -482,6 +482,29 @@ export class HermesAdapter {
     return this._run(profile, this._kb(opts.board, rest));
   }
 
+  // Reasigna una tarea a otro perfil (ej. "coder"). El perfil ES el agente: su
+  // SOUL.md/skills deciden qué hace con la tarea, no hay un verbo "ejecutar" aparte.
+  async kanbanAssign(profile, id, targetProfile, board) {
+    if (!ID_RE.test(id || '')) return { ok: false, stderr: 'id inválido' };
+    if (!targetProfile) return { ok: false, stderr: 'perfil destino requerido' };
+    return this._run(profile, this._kb(board, ['assign', String(id), String(targetProfile)]));
+  }
+
+  // Mueve manualmente todo/blocked → ready (recovery path del CLI). No-op (y
+  // ok:false) si la tarea ya está ready/running — se ignora en el caller.
+  async kanbanPromote(profile, id, board) {
+    if (!ID_RE.test(id || '')) return { ok: false, stderr: 'id inválido' };
+    return this._run(profile, this._kb(board, ['promote', String(id)]));
+  }
+
+  // Un tick síncrono del dispatcher: reclama huérfanas, promueve lo que ya
+  // puede correr y lanza (en background) un worker por tarea ready+asignada.
+  // No hay filtro por task-id en el CLI — `max` acota cuántas puede lanzar
+  // este tick, no CUÁL lanza (ver assign/promote arriba para acotar la tarea).
+  async kanbanDispatch(profile, board, { max = 1 } = {}) {
+    return this._run(profile, this._kb(board, ['dispatch', '--max', String(max), '--json']), { timeout: 30_000 });
+  }
+
   async _profiles() {
     const profiles = [{ name: '(default)', path: this.dir }];
     for (const e of await listDirs(join(this.dir, 'profiles'))) {

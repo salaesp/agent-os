@@ -13,6 +13,7 @@ import { scoutSkills } from './skill-scout.js';
 import { generateDreams, promoteDream, promotingDreams } from './dreamer.js';
 import { ideateForGoals } from './ideator.js';
 import { runInvestigations } from './investigator.js';
+import { runTaskNow } from './coder-runner.js';
 import { listDreams, setDreamStatus, getSuggestion, startRun, endRun, listDecisions, listRuns, getDecisionChain } from './db.js';
 import { consolidateREM } from './rem.js';
 import { startScheduler } from './scheduler.js';
@@ -230,6 +231,14 @@ const handler = async (req, res) => {
         const r = await adapter.kanbanAction(body.profile, body.id, body.action, body);
         cache.clear();
         return sendJson(res, r, r.ok ? 200 : 400);
+      }
+      // Bandeja "default": dispara el coder AHORA sobre una tarea puntual, sin
+      // esperar el tick del gateway. El pipeline coder→reviewer (branch, PR,
+      // merge automático a main si pasa la revisión) vive del lado de Hermes.
+      if (path === '/api/kanban/run-now') {
+        const r = await runTaskNow(adapter, { board: body.board, id: body.id, profile: body.targetProfile || 'coder' });
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400));
       }
       if (path === '/api/chat') {
         const r = await adapter.chat(body.profile, body.message, { sessionId: body.sessionId, model: body.model });
