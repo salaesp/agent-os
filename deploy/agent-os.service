@@ -18,6 +18,10 @@ EnvironmentFile=-%h/.config/agent-os/env
 ExecStart=/usr/bin/node --experimental-sqlite %h/code/agent-os/src/server.js
 Restart=on-failure
 RestartSec=5
+# Consola web: las sesiones de Claude viven en un tmux hijo del servicio. Con el
+# KillMode por defecto (control-group), reiniciar el Agent OS mataría el tmux y
+# con él la conversación en curso. `process` termina solo el proceso node.
+KillMode=process
 
 [Install]
 WantedBy=default.target

@@ -4,6 +4,14 @@ import { PageHead, Loading, ErrorBox, rel } from '../components/ui.jsx';
 
 const CAT = { workflow: { icon: 'work', label: 'Workflow' }, vida: { icon: 'favorite', label: 'Vida' }, aprendizaje: { icon: 'school', label: 'Aprendizaje' } };
 const MODE = { push: 'empuje', queue: 'cola', store: 'silenciosa' };
+// Motivos de descarte (espejo de DISMISS_REASONS en src/suggestions.js). El motivo
+// decide cuánto se bloquea el tema y si castiga o no a la categoría.
+const REASONS = [
+  { key: 'done', icon: 'task_alt', label: 'Ya lo hice', tip: 'buena sugerencia, pero llegó tarde — no baja la categoría' },
+  { key: 'not_interested', icon: 'do_not_disturb_on', label: 'No me interesa', tip: 'el tema no te interesa — baja la categoría' },
+  { key: 'wrong', icon: 'error', label: 'No aplica', tip: 'partía de algo falso — no lo vuelve a plantear de otra forma' },
+];
+const REASON_LABEL = Object.fromEntries(REASONS.map((r) => [r.key, r.label]));
 
 function actionPreview(s) {
   const p = s.action_payload || {};
@@ -25,6 +33,7 @@ export function Suggestions() {
   const [msg, setMsg] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [showCfg, setShowCfg] = useState(false);
+  const [asking, setAsking] = useState(null); // id de la sugerencia que está eligiendo motivo de descarte
 
   if (loading) return <Loading />;
   if (error) return <><PageHead title="Sugerencias" /><ErrorBox error={error} /></>;
@@ -58,11 +67,13 @@ export function Suggestions() {
       await post(`/api/suggestions/${kind}`, { id, reason });
       setMsg({ ok: true, text: LABEL[kind] || 'listo' });
       reload();
-    } catch (e) { setMsg({ ok: false, text: e.message }); }
+      return true;
+    } catch (e) { setMsg({ ok: false, text: e.message }); return false; }
     finally { setBusyId(null); }
   };
-  const dismiss = (s) => {
-    if (confirm(`¿Descartar «${s.title}»?\n\nNo se va a volver a sugerir. Podés recuperarla después con "Restaurar".`)) act(s.id, 'dismiss', s.title);
+  const dismiss = async (s, reason) => {
+    setAsking(null);
+    if (await act(s.id, 'dismiss', reason)) setMsg({ ok: true, text: `descartada · ${REASON_LABEL[reason].toLowerCase()}` });
   };
 
   const toggleAuto = async () => {
@@ -148,11 +159,25 @@ export function Suggestions() {
               <div class="muted" style="font-size:12.5px;margin-bottom:8px">{s.rationale}</div>
               {s.source && <div class="muted" style="font-size:11px;margin-bottom:8px">fuente: {s.source}</div>}
               {prev && <div class="chip small" style="margin-bottom:12px"><span class="msr" style="font-size:13px">bolt</span>{prev}</div>}
-              <div class="wrap">
-                {s.action_type !== 'none' && <button class="chip filter-chip on" disabled={!!busyId} onClick={() => act(s.id, 'apply')}>{busyId === s.id + 'apply' ? '…' : 'Aplicar'}</button>}
-                <button class="chip" disabled={!!busyId} onClick={() => dismiss(s)}>Descartar</button>
-                <button class="chip" disabled={!!busyId} onClick={() => act(s.id, 'snooze')}>Después</button>
-              </div>
+              {asking === s.id ? (
+                <div>
+                  <div class="muted" style="font-size:11.5px;margin-bottom:6px">¿Por qué la descartás? Con eso aprendo — no es lo mismo «ya lo hice» que «no me interesa».</div>
+                  <div class="wrap">
+                    {REASONS.map((r) => (
+                      <button class="chip" key={r.key} title={r.tip} disabled={!!busyId} onClick={() => dismiss(s, r.key)}>
+                        <span class="msr" style="font-size:14px">{r.icon}</span>{r.label}
+                      </button>
+                    ))}
+                    <button class="chip" disabled={!!busyId} onClick={() => setAsking(null)}>Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <div class="wrap">
+                  {s.action_type !== 'none' && <button class="chip filter-chip on" disabled={!!busyId} onClick={() => act(s.id, 'apply')}>{busyId === s.id + 'apply' ? '…' : 'Aplicar'}</button>}
+                  <button class="chip" disabled={!!busyId} onClick={() => setAsking(s.id)}>Descartar</button>
+                  <button class="chip" disabled={!!busyId} onClick={() => act(s.id, 'snooze')}>Después</button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -164,7 +189,7 @@ export function Suggestions() {
           <div class="list">
             {decided.map((s) => (
               <div class="list-row" key={s.id}>
-                <span class="chip small">{s.status === 'applied' ? '✓ aplicada' : s.status === 'dismissed' ? '✕ descartada' : '⏳ después'}</span>
+                <span class="chip small">{s.status === 'applied' ? '✓ aplicada' : s.status === 'dismissed' ? `✕ ${REASON_LABEL[s.dismiss_reason] || 'descartada'}` : '⏳ después'}</span>
                 <div class="grow"><span class="title" style="font-size:13px">{s.title}</span></div>
                 {(s.status === 'dismissed' || s.status === 'snoozed') && (
                   <button class="chip small" disabled={!!busyId} onClick={() => act(s.id, 'restore')} title="volver a agregarla al inbox y desbloquearla"><span class="msr" style="font-size:14px">restore</span>Restaurar</button>

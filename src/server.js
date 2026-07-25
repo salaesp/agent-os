@@ -10,8 +10,10 @@ import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting,
 import { getInbox, generateSuggestions, applySuggestion, dismissSuggestion, snoozeSuggestion, restoreSuggestion, sendMorningBrief } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
-import { generateDreams } from './dreamer.js';
-import { listDreams, setDreamStatus } from './db.js';
+import { generateDreams, promoteDream, promotingDreams } from './dreamer.js';
+import { ideateForGoals } from './ideator.js';
+import { listDreams, setDreamStatus, getSuggestion, startRun, endRun, listDecisions, listRuns, getDecisionChain } from './db.js';
+import { consolidateREM } from './rem.js';
 import { startScheduler } from './scheduler.js';
 import { computeAffinity } from './preferences.js';
 import { getSecrets } from './secrets.js';
@@ -19,8 +21,10 @@ import { getCosts } from './costs.js';
 import { listDocs, readDoc, rawDoc, deleteDoc } from './docs.js';
 import { detectSoftware } from './onboarding.js';
 import { listProjects, buildGraph } from './codegraph.js';
+import { listWorkspaces, getSessions as getTermSessions, killSession, resizeSession, writeInput, attachStream } from './terminal.js';
 
-const adapter = new HermesAdapter(config.hermesDir, config.hermesBin, config.obsidianVault);
+// Los hooks inyectan el registro de ejecuciones: el adapter no importa db.js.
+const adapter = new HermesAdapter(config.hermesDir, config.hermesBin, config.obsidianVault, { startRun, endRun });
 adapter.gatewayUrl = config.gatewayApiUrl;
 adapter.gatewayKey = config.gatewayApiKey;
 
@@ -142,6 +146,34 @@ const handler = async (req, res) => {
       return;
     }
 
+    // --- Consola web: terminal real con Claude sobre tmux (src/terminal.js). ---
+    // Va antes del bloque genérico: el stream es long-lived y el input tiene que
+    // ser lo más barato posible (una tecla por request, sin tocar la cache).
+    if (path === '/api/term/attach') {
+      return attachStream(req, res, {
+        workspace: url.searchParams.get('workspace') || '',
+        cols: url.searchParams.get('cols'),
+        rows: url.searchParams.get('rows'),
+      });
+    }
+    if (path === '/api/term/workspaces') return sendJson(res, { workspaces: await listWorkspaces() });
+    if (path === '/api/term/sessions') return sendJson(res, await getTermSessions());
+    if (req.method === 'POST' && path === '/api/term/input') {
+      const body = await readBody(req);
+      const r = writeInput(body.token, body.data);
+      return sendJson(res, r, r.ok ? 200 : 410);
+    }
+    if (req.method === 'POST' && path === '/api/term/resize') {
+      const body = await readBody(req);
+      const r = await resizeSession(body.token, body.cols, body.rows);
+      return sendJson(res, r, r.ok ? 200 : 410);
+    }
+    if (req.method === 'POST' && path === '/api/term/kill') {
+      const body = await readBody(req);
+      const r = await killSession(body.workspace);
+      return sendJson(res, r, r.ok ? 200 : 400);
+    }
+
     // --- Escrituras (POST) → CLI del agente. Limpian la cache para reflejo inmediato. ---
     if (req.method === 'POST' && path.startsWith('/api/')) {
       const body = await readBody(req);
@@ -179,6 +211,14 @@ const handler = async (req, res) => {
         const r = await adapter.kanbanCreate(body.profile, body);
         cache.clear();
         return sendJson(res, r, r.ok ? 200 : 400);
+      }
+      if (path === '/api/kanban/show') {
+        const r = await adapter.kanbanShow(body.profile, body.id, body.board);
+        return sendJson(res, r, r.ok ? 200 : 400);
+      }
+      if (path === '/api/kanban/log') {
+        const r = await adapter.kanbanLog(body.profile, body.id, body.board, body.tail);
+        return sendJson(res, r, r.ok ? 200 : 404);
       }
       if (path === '/api/kanban/comment') {
         const r = await adapter.kanbanComment(body.profile, body.id, body.text, body.board);
@@ -222,6 +262,26 @@ const handler = async (req, res) => {
       if (path === '/api/skills/scout') { const r = await scoutSkills(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
       if (path === '/api/dreams/generate') { const r = await generateDreams(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
       if (path === '/api/dreams/action') { cache.clear(); return sendJson(res, setDreamStatus(body.id, body.status === 'saved' ? 'saved' : 'dismissed')); }
+      if (path === '/api/dreams/promote') {
+        const r = await promoteDream(adapter, body.id);
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : 400);
+      }
+      // Ideación divergente sobre un objetivo de Mission Control → cae en el inbox
+      // de Sugerencias, ya accionable (kanban/goal/goal_progress).
+      if (path === '/api/ideate') {
+        const r = await ideateForGoals(adapter, { goalId: body.goalId || null });
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400));
+      }
+      // Consolidación REM: escribe <vault>/rem/YYYY-MM-DD.md. Sin `day` cierra
+      // el día anterior, que es lo que hace el bundle nocturno.
+      if (path === '/api/rem/run') {
+        if (body.day && !/^\d{4}-\d{2}-\d{2}$/.test(body.day)) return sendJson(res, { error: 'day inválido (YYYY-MM-DD)' }, 400);
+        const r = await consolidateREM(adapter, { day: body.day || null });
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400));
+      }
       if (path === '/api/memory/write') {
         const r = await adapter.writeMemory(body.profile, body.which, body.text);
         cache.clear();
@@ -244,6 +304,22 @@ const handler = async (req, res) => {
       return sendJson(res, { error: 'not found' }, 404);
     }
 
+    // Rastro de decisiones (lectura). `chain` reconstruye la cadena completa de
+    // una decisión: de "apliqué esto" hasta el sueño que lo originó.
+    if (path === '/api/decisions') {
+      if (url.searchParams.get('chain')) return sendJson(res, getDecisionChain(url.searchParams.get('chain')));
+      return sendJson(res, {
+        decisions: listDecisions({
+          day: url.searchParams.get('day') || null,
+          subjectId: url.searchParams.get('subject') || null,
+          stage: url.searchParams.get('stage') || null,
+          actor: url.searchParams.get('actor') || null,
+          limit: Math.min(1000, Number(url.searchParams.get('limit')) || 200),
+        }),
+        runs: listRuns({ day: url.searchParams.get('day') || null, limit: 200 }),
+      });
+    }
+
     // Mission Control (lectura, sin cache: es barato y local).
     if (path === '/api/goals') return sendJson(res, listGoals());
 
@@ -252,7 +328,17 @@ const handler = async (req, res) => {
     if (path === '/api/profile') return sendJson(res, getProfile());
     if (path === '/api/preferences') return sendJson(res, computeAffinity());
     if (path === '/api/skills/all') return sendJson(res, { skills: await adapter.getSkillsAllProfiles() });
-    if (path === '/api/dreams') return sendJson(res, { dreams: listDreams() });
+    if (path === '/api/dreams') {
+      // Cada sueño ya aterrizado viaja con la sugerencia que produjo (y su estado
+      // actual), así el panel puede mostrar en qué terminó sin que el usuario
+      // tenga que ir a buscarla a mano.
+      const dreams = listDreams().map((d) => {
+        if (!d.promoted_to) return d;
+        const s = getSuggestion(d.promoted_to);
+        return { ...d, suggestion: s ? { id: s.id, title: s.title, status: s.status, action_type: s.action_type } : null };
+      });
+      return sendJson(res, { dreams, promoting: promotingDreams() });
+    }
 
     // Sesiones de chat (para retomar conversaciones)
     if (path === '/api/sessions') return sendJson(res, await adapter.getSessions(url.searchParams.get('profile') || '(default)'));

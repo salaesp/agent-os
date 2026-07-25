@@ -7,13 +7,16 @@ import { generateSuggestions, sendMorningBrief } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
 import { generateDreams } from './dreamer.js';
-import { getSetting, setSetting } from './db.js';
+import { ideateForGoals } from './ideator.js';
+import { consolidateREM } from './rem.js';
+import { getSetting, setSetting, localDay, purgeTrail } from './db.js';
 
 const CHECK_MS = 15 * 60 * 1000; // cada 15 min
 let inFlight = false;
+let nightlyInFlight = false;
 
 const num = (k, d) => Number(getSetting(k, String(d)));
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => localDay();
 
 // Firma del "estado de borde": cambia cuando pasa algo digno de reflexionar.
 async function boundarySignature(adapter) {
@@ -50,39 +53,22 @@ async function maybeGenerate(adapter) {
   const now = Date.now();
   const lastGenAt = getSetting('sugg_last_gen_at', null);
   const lastGenMs = lastGenAt ? Date.parse(lastGenAt) : 0;
-  const generatedToday = getSetting('sugg_gen_day', '') === todayStr();
-  const count = genCountToday();
+  const count = genCountToday(); // 0 si el contador es de otro día
   const cap = num('auto_daily_cap', 3);
   const minGapMs = num('auto_min_interval_h', 4) * 3600 * 1000;
 
-  let trigger = null;
-  // Nocturno: a la hora configurada, si todavía no generamos hoy.
-  if (new Date().getHours() === num('auto_nightly_hour', 8) && !generatedToday) trigger = 'nightly';
-  // Límite de tarea: cambió la firma, pasó el intervalo mínimo y hay presupuesto.
-  else if (sig !== lastSig && (now - lastGenMs) >= minGapMs && count < cap) trigger = 'boundary';
-
-  if (!trigger) { if (sig !== lastSig) setSetting('sugg_last_sig', sig); return; }
-  if (count >= cap) { setSetting('sugg_last_sig', sig); return; }
+  // Sólo generación de BORDE: cambió la firma, pasó el intervalo mínimo y hay
+  // presupuesto. Lo nocturno vive aparte (runNightly) con su propio cupo.
+  if (count >= cap) { if (sig !== lastSig) setSetting('sugg_last_sig', sig); return; }
+  // Si el borde llegó antes del intervalo mínimo NO se pisa la firma: queda
+  // pendiente para el próximo chequeo (antes se la comía y el borde se perdía).
+  if (sig === lastSig || (now - lastGenMs) < minGapMs) return;
 
   inFlight = true;
   try {
-    const r = await generateSuggestions(adapter, { trigger });
+    const r = await generateSuggestions(adapter, { trigger: 'boundary' });
     recordGen(sig);
-    console.log(`[scheduler] auto-gen (${trigger}): ${r.created ?? 0} nuevas, ${r.skipped ?? 0} dedup, ${r.pushed ?? 0} push`);
-    // Tras la generación nocturna, mandar el morning brief (1 push/día, batcheado).
-    if (trigger === 'nightly') {
-      const b = await sendMorningBrief(adapter);
-      if (b.ok) console.log(`[scheduler] morning brief enviado (${b.sent} sugerencias)`);
-      // Aprendizaje de perfil (propone updates para que el usuario confirme).
-      const l = await learnProfile(adapter);
-      if (l.ok && l.created) console.log(`[scheduler] perfil: ${l.created} cambios propuestos`);
-      // Skill-scout: flujos repetidos → candidatos a /learn (confirmación 1-click).
-      const sk = await scoutSkills(adapter);
-      if (sk.ok && sk.created) console.log(`[scheduler] skill-scout: ${sk.created} candidato(s) a skill`);
-      // Dreaming inventivo (ideas/patrones sobre la vida del usuario).
-      const dr = await generateDreams(adapter);
-      if (dr.ok && dr.created) console.log(`[scheduler] dreaming: ${dr.created} ideas`);
-    }
+    console.log(`[scheduler] auto-gen (boundary): ${r.created ?? 0} nuevas, ${r.skipped ?? 0} dedup, ${r.pushed ?? 0} push`);
   } catch (e) {
     console.error('[scheduler] auto-gen falló:', e.message);
   } finally {
@@ -90,9 +76,94 @@ async function maybeGenerate(adapter) {
   }
 }
 
+// Un paso del bundle: aislado, nunca tumba a los que siguen.
+async function step(name, fn) {
+  try {
+    const r = await fn();
+    console.log(`[scheduler] ${name}: ${r || 'ok'}`);
+  } catch (e) {
+    console.error(`[scheduler] ${name} falló: ${e.message}`);
+  }
+}
+
+// --- Bundle nocturno: sugerencias + brief + perfil + skills + sueños (+ ideación).
+// Tiene su PROPIO marcador de día y su propio cupo: antes colgaba de la generación
+// de sugerencias y compartía el tope diario con las de borde, así que en cuanto se
+// gastaba el cupo temprano el bundle entero no corría nunca — ni brief, ni perfil,
+// ni skill-scout, ni sueños. Además hace CATCH-UP: si el server no estaba vivo a la
+// hora exacta, corre igual más tarde ese mismo día (antes se perdía el día entero).
+async function maybeNightly(adapter) {
+  if (nightlyInFlight) return;
+  if (getSetting('auto_suggest_enabled', '1') !== '1') return;
+  const today = todayStr();
+  if (getSetting('nightly_day', '') === today) return;
+  if (new Date().getHours() < num('auto_nightly_hour', 8)) return;
+
+  nightlyInFlight = true;
+  // Se marca ANTES de correr: si algún paso falla no queremos reintentar el bundle
+  // completo cada 15 min durante todo el día (cada paso ya loguea su propio error).
+  setSetting('nightly_day', today);
+  console.log('[scheduler] bundle nocturno: arrancando');
+  try {
+    await step('sugerencias (nocturna)', async () => {
+      const r = await generateSuggestions(adapter, { trigger: 'nightly' });
+      if (!r.ok) throw new Error(r.error || 'sin detalle');
+      recordGen(await boundarySignature(adapter).catch(() => getSetting('sugg_last_sig', '')));
+      return `${r.created ?? 0} nuevas, ${r.skipped ?? 0} dedup, ${r.pushed ?? 0} push`;
+    });
+    await step('morning brief', async () => {
+      const b = await sendMorningBrief(adapter);
+      return b.ok ? `enviado (${b.sent} sugerencias)` : `no enviado (${b.reason || b.error || '?'})`;
+    });
+    await step('perfil', async () => {
+      const l = await learnProfile(adapter);
+      return l.created ? `${l.created} cambios propuestos` : 'sin cambios';
+    });
+    await step('skill-scout', async () => {
+      const sk = await scoutSkills(adapter);
+      return sk.created ? `${sk.created} candidato(s) a skill` : 'sin candidatos';
+    });
+    if (getSetting('auto_dream_enabled', '1') === '1') {
+      await step('dreaming', async () => {
+        const dr = await generateDreams(adapter);
+        if (!dr.ok) throw new Error(dr.error || 'sin detalle');
+        return `${dr.created} ideas`;
+      });
+    } else console.log('[scheduler] dreaming: deshabilitado');
+    // Ideación divergente sobre los objetivos: cara (varias pasadas del modelo),
+    // así que arranca APAGADA — se prende desde Mission Control.
+    if (getSetting('auto_ideate_enabled', '0') === '1') {
+      await step('ideación', async () => {
+        const i = await ideateForGoals(adapter);
+        if (!i.ok) throw new Error(i.error || 'sin detalle');
+        return `${i.created} ideas sobre «${i.goal}»`;
+      });
+    }
+    // REM va ÚLTIMO: consolida el día anterior leyendo todo lo que los pasos de
+    // arriba acaban de dejar en el ledger.
+    if (getSetting('auto_rem_enabled', '1') === '1') {
+      await step('REM', async () => {
+        const r = await consolidateREM(adapter);
+        if (!r.ok) throw new Error(r.error || 'sin detalle');
+        const p = purgeTrail(num('rem_retention_days', 90));
+        const purged = p.ok && (p.decisions || p.runs) ? ` · purga: ${p.decisions}+${p.runs}` : '';
+        return `${r.day} → ${r.rel}${r.degraded ? ' (sin síntesis)' : ''}${purged}`;
+      });
+    } else console.log('[scheduler] REM: deshabilitado');
+    console.log('[scheduler] bundle nocturno: listo');
+  } finally {
+    nightlyInFlight = false;
+  }
+}
+
+async function tick(adapter) {
+  await maybeNightly(adapter).catch((e) => console.error('[scheduler] nocturno falló:', e.message));
+  await maybeGenerate(adapter).catch((e) => console.error('[scheduler] borde falló:', e.message));
+}
+
 export function startScheduler(adapter) {
   // Primer chequeo a los 60s del arranque (deja que todo levante).
-  setTimeout(() => maybeGenerate(adapter).catch(() => {}), 60_000);
-  setInterval(() => maybeGenerate(adapter).catch(() => {}), CHECK_MS);
+  setTimeout(() => tick(adapter).catch(() => {}), 60_000);
+  setInterval(() => tick(adapter).catch(() => {}), CHECK_MS);
   console.log('[scheduler] proactividad automática activa (chequeo cada 15 min)');
 }

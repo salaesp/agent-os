@@ -4,8 +4,8 @@
 // señal negativa en el perfil. Nada se ejecuta sin tu 1-click.
 import {
   createSuggestion, listSuggestions, getSuggestion, setSuggestionStatus,
-  getProfile, setProfile, addNegativeSignal, removeNegativeSignal, activeNegatives, listGoals, getSetting, setSetting, createGoal, updateGoal,
-  pushSentToday, recordPushSent, recordPrefEvent,
+  getProfile, setProfile, addNegativeSignal, removeNegativeSignal, activeNegativeEntries, listGoals, getSetting, setSetting, createGoal, updateGoal,
+  pushSentToday, recordPushSent, recordPrefEvent, recordDecision, listDecisions,
 } from './db.js';
 import { computeAffinity, affinityHint, scoreNudge } from './preferences.js';
 
@@ -39,7 +39,7 @@ async function buildContext(adapter) {
 
 function buildPrompt(ctx, avoid = [], hint = '') {
   const avoidBlock = avoid.length
-    ? `\n\nNO PROPONGAS NADA parecido a esto (ya está en el inbox o el usuario lo descartó — repetirlo lo molesta):\n${avoid.map((t) => `- ${t}`).join('\n')}\n`
+    ? `\n\nNO PROPONGAS NADA parecido a esto (ya está en el inbox o el usuario lo descartó — repetirlo lo molesta). Entre paréntesis, POR QUÉ lo descartó: usalo como dato real sobre él (si dice "ya lo hice", ESO YA ESTÁ HECHO; si dice "no aplica", tu premisa era falsa — no la repitas en otra forma):\n${avoid.map((a) => `- ${a.text} (${a.why})`).join('\n')}\n`
     : '';
   return `Sos el motor de PROACTIVIDAD de un "Agent OS" personal. Analizá el contexto del usuario y proponé sugerencias CONCRETAS y ACCIONABLES para mejorar su trabajo/flujos, su vida/hábitos y su aprendizaje. Basate SOLO en los datos; no inventes. Cada sugerencia debe tener un "por qué" anclado en el contexto.
 ${avoidBlock}${hint}
@@ -105,8 +105,15 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
   const ctx = await buildContext(adapter);
   // Dedup dirigido: pasarle al modelo lo que ya está en el inbox + lo descartado (activo).
   const inboxTitles = listSuggestions().filter((s) => s.status === 'new' || s.status === 'snoozed').map((s) => s.title);
-  const negativeTitles = activeNegatives();
-  const avoid = [...new Set([...inboxTitles, ...negativeTitles])].slice(0, 40);
+  const negEntries = activeNegativeEntries();
+  const negativeTitles = negEntries.map((n) => n.text);
+  // Cada item del avoid lleva su POR QUÉ: el motivo del descarte es información
+  // sobre el usuario, no sólo un bloqueo ("ya lo hice" ≠ "no me interesa").
+  const avoid = [];
+  const seenAvoid = new Set();
+  for (const t of inboxTitles) if (t && !seenAvoid.has(t)) { seenAvoid.add(t); avoid.push({ text: t, why: 'ya está en el inbox' }); }
+  for (const n of negEntries) if (!seenAvoid.has(n.text)) { seenAvoid.add(n.text); avoid.push({ text: n.text, why: DISMISS_REASONS[n.reason]?.hint || 'lo descartó' }); }
+  avoid.splice(40);
   const affinity = computeAffinity(); // drift de preferencias (Fase 4)
 
   // Anti-burbuja: categorías que el usuario viene ignorando/descartando → pedir ≥1 exploratoria.
@@ -134,6 +141,24 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
   };
   const TIME = { now: 100, soon: 60, whenever: 20 };
   let created = 0, skipped = 0, pushed = 0, stored = 0, exploredOne = false;
+
+  // Rastro: qué entró a esta tanda. Se repite en cada candidato para que una
+  // decisión sea legible sola, sin tener que reconstruir la corrida entera.
+  const inputs = {
+    trigger, avoid: avoid.length, minScore, pesos: W,
+    contexto: { crons: ctx.crons?.length ?? 0, kanban: ctx.kanban?.tasks?.length ?? 0, sesiones: ctx.sessions?.length ?? 0, objetivos: ctx.goals?.length ?? 0 },
+    exploreCats: [...exploreCats],
+  };
+  // Se registra CADA candidato, incluidos los que no dejan fila en `suggestions`:
+  // los `skipped` y los `store` eran completamente invisibles hasta acá.
+  const trace = (c, choice, scores, extra = {}) => recordDecision({
+    actor: 'agent', stage: 'suggest', subject_type: extra.subject_id ? 'suggestion' : 'none',
+    subject_id: extra.subject_id || null, title: c.title, choice,
+    rationale: extra.why || c.rationale || null,
+    inputs, scores,
+    evidence: { fuente: c.source || null, categoria: c.category || null, timeliness: c.timeliness || null, action_type: c.action_type || null },
+  });
+
   for (const c of arr) {
     const category = CATEGORIES.has(c.category) ? c.category : 'workflow';
     // Exploratoria: 1 por tanda, de una categoría que el usuario viene ignorando.
@@ -144,16 +169,28 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
       ? Number(c.score) || 0
       : (W.rel * (num100(c.relevance)) + W.gap * (num100(c.knowledge_gap)) + W.incr * (num100(c.incremental_value)) + W.time * timeScore);
     // La exploratoria NO recibe el nudge negativo (sería injusto castigarla justo por bajar).
-    const score = Math.max(0, Math.min(100, Math.round(base) + (isExplore ? 0 : scoreNudge(category, affinity))));
-    if (!isExplore && score < minScore) { skipped++; continue; }
+    const nudge = isExplore ? 0 : scoreNudge(category, affinity);
+    const score = Math.max(0, Math.min(100, Math.round(base) + nudge));
+    const scores = {
+      relevance: num100(c.relevance), gap: num100(c.knowledge_gap), incremental: num100(c.incremental_value),
+      time: timeScore, base: Math.round(base), nudge, final: score, minScore, exploratory: isExplore,
+    };
+    if (!isExplore && score < minScore) { trace(c, 'skipped', scores, { why: `score ${score} < mínimo ${minScore}` }); skipped++; continue; }
     const t = norm(c.title);
-    if (existing.has(t) || negatives.some((n) => n && (t.includes(n) || n.includes(t)))) { skipped++; continue; }
+    if (existing.has(t) || negatives.some((n) => n && (t.includes(n) || n.includes(t)))) {
+      trace(c, 'skipped', scores, { why: 'duplicada o bloqueada por una señal negativa activa' });
+      skipped++; continue;
+    }
     existing.add(t);
     const action_type = ACTIONS.has(c.action_type) ? c.action_type : 'none';
     let mode = decideMode(score, c.timeliness);
     // Modo "store" (bajo valor): NO ensucia el inbox — se guarda como insight en el perfil.
     // (una exploratoria nunca se guarda callada: queremos que la veas.)
-    if (mode === 'store' && !isExplore) { storeInsight(c.title, c.rationale); stored++; continue; }
+    if (mode === 'store' && !isExplore) {
+      storeInsight(c.title, c.rationale);
+      trace(c, 'store', scores, { why: 'bajo valor: guardada como insight en el perfil, no entra al inbox' });
+      stored++; continue;
+    }
     if (mode === 'store') mode = 'queue';
     // Gate de entrega: push solo si está habilitado y queda presupuesto; si no, cae a cola.
     const canPush = mode === 'push' && pushEnabled && pushSentToday() < budget;
@@ -162,6 +199,7 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
       category, title: c.title, rationale: c.rationale, source: `${c.source || ''}${trigger !== 'manual' ? ` · auto:${trigger}` : ''}`,
       action_type, action_payload: c.action_payload || {}, score, mode, exploratory: isExplore,
     });
+    trace(c, mode, scores, { subject_id: s.id });
     created++;
     if (isExplore) exploredOne = true;
     if (canPush) { const ok = await deliverPush(adapter, s); if (ok) { recordPushSent(); pushed++; } }
@@ -170,6 +208,19 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
 }
 
 const num100 = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+
+// La decisión del AGENTE que creó esta sugerencia. Es el eslabón que permite ir
+// de "descarté esto" hacia atrás, hasta el score y el contexto que lo propusieron.
+const originOf = (id) => listDecisions({ subjectId: id, stage: 'suggest', limit: 1 })[0]?.id || null;
+// Decisión del USUARIO sobre una sugerencia, colgada de su origen.
+function traceUser(s, choice, extra = {}) {
+  recordDecision({
+    actor: 'user', stage: choice === 'applied' ? 'apply' : choice === 'snoozed' ? 'snooze' : 'dismiss',
+    subject_type: 'suggestion', subject_id: s.id, title: s.title, choice,
+    rationale: extra.why || null, parent_id: originOf(s.id),
+    evidence: { categoria: s.category, action_type: s.action_type, score: s.score, motivo: extra.reason || null },
+  });
+}
 // Guarda un insight de baja prioridad en el perfil (modo "store"), acotado.
 function storeInsight(title, rationale) {
   const p = getProfile();
@@ -258,6 +309,7 @@ export async function applySuggestion(adapter, id) {
         const req = p.request || s.title;
         setSuggestionStatus(id, 'applied');
         recordPrefEvent(s.category, s.action_type, 'applied');
+        traceUser(s, 'applied', { why: 'skill_learn: marcada optimista, el /learn corre en background' });
         adapter.learnSkill('(default)', req)
           .then((r) => adapter.pushMessage(getSetting('push_channel', 'discord'),
             r.ok
@@ -272,23 +324,37 @@ export async function applySuggestion(adapter, id) {
     }
   } catch (e) { res = { ok: false, error: e.message }; }
 
-  if (res.ok) { setSuggestionStatus(id, 'applied'); recordPrefEvent(s.category, s.action_type, 'applied'); }
+  if (res.ok) { setSuggestionStatus(id, 'applied'); recordPrefEvent(s.category, s.action_type, 'applied'); traceUser(s, 'applied'); }
+  else traceUser(s, 'failed', { why: res.error || 'falló al aplicar' });
   return { ...res, suggestion: getSuggestion(id) };
 }
+
+// Motivos de descarte. El motivo cambia DOS cosas: cuánto tiempo se bloquea el
+// tema (ttl de la señal negativa) y qué aprende el modelo de preferencias
+// (signal). "Ya lo hice" = la sugerencia era buena, sólo llegó tarde: no castiga
+// la categoría. "No me interesa" / "No aplica" sí.
+export const DISMISS_REASONS = {
+  done: { label: 'Ya lo hice', hint: 'ya estaba resuelto cuando lo sugerí', signal: 0.9, ttlDays: 365 },
+  not_interested: { label: 'No me interesa', hint: 'el tema no le interesa', signal: 0, ttlDays: 60 },
+  wrong: { label: 'No aplica', hint: 'la sugerencia estaba mal o partía de algo falso', signal: 0, ttlDays: 180 },
+};
 
 export function dismissSuggestion(id, reason) {
   const s = getSuggestion(id);
   if (!s) return { ok: false, error: 'no existe' };
-  addNegativeSignal(reason || s.title);
-  setSuggestionStatus(id, 'dismissed');
-  recordPrefEvent(s.category, s.action_type, 'dismissed');
-  return { ok: true };
+  const key = DISMISS_REASONS[reason] ? reason : null;
+  const r = key ? DISMISS_REASONS[key] : null;
+  addNegativeSignal(s.title, { reason: key, ttlDays: r?.ttlDays });
+  setSuggestionStatus(id, 'dismissed', { reason: key });
+  recordPrefEvent(s.category, s.action_type, 'dismissed', r?.signal);
+  traceUser(s, 'dismissed', { reason: key, why: r?.hint || null });
+  return { ok: true, reason: key };
 }
 
 export function snoozeSuggestion(id) {
   const s = getSuggestion(id);
   setSuggestionStatus(id, 'snoozed');
-  if (s) recordPrefEvent(s.category, s.action_type, 'snoozed');
+  if (s) { recordPrefEvent(s.category, s.action_type, 'snoozed'); traceUser(s, 'snoozed'); }
   return { ok: true };
 }
 

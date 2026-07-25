@@ -83,6 +83,8 @@ input { font: inherit; }
   border-right: 1px solid var(--hairline); padding: 14px 10px 10px; display: flex; flex-direction: column;
 }
 .side-label { font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 6px 12px 4px; }
+/* Grupos del nav: aire entre uno y otro, pero no arriba del primero. */
+.nav-group + .nav-group { margin-top: 10px; }
 .nav-item {
   display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: var(--radius-s);
   color: var(--text); width: 100%; margin-bottom: 1px; transition: background .12s var(--ease);
@@ -204,6 +206,18 @@ input { font: inherit; }
   .chat-main { height: calc(100vh - 260px); }
 }
 
+/* ---------------- Consola (xterm) ---------------- */
+/* El padding derecho lleva unos px de más a propósito: FitAddon redondea con un
+   ancho de carácter que difiere por decimales del que termina dibujando el
+   renderer, y sin holgura la última columna queda recortada 2-3px. */
+.console-host { flex: 1; min-height: 0; padding: 8px 18px 6px 10px; background: var(--bg); }
+/* La barra de scroll nativa de xterm ocupa ~15px que FitAddon NO descuenta al
+   calcular las columnas: la última columna de texto termina dibujada debajo de la
+   barra. La ocultamos (la rueda y Shift+PgUp siguen scrolleando) y el aire de la
+   derecha lo da el padding del contenedor, que sí entra en el cálculo. */
+.console-host .xterm-viewport { scrollbar-width: none; }
+.console-host .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+
 /* ---------------- ASCII de Hermes ---------------- */
 .ascii {
   font-family: var(--mono); line-height: 1.02; margin: 0; white-space: pre; letter-spacing: 0;
@@ -228,6 +242,9 @@ input { font: inherit; }
     border-right: none; border-top: 1px solid var(--hairline); overflow-x: auto; padding: 8px; gap: 4px;
   }
   .side-label, .nav-item .label, .nav-badge, .sidebar .spacer, .sidebar .caduceus-wrap { display: none; }
+  /* Los grupos se disuelven: sin esto cada uno sería una columna dentro del
+     flex-row y la barra inferior se rompía en bloques apilados. */
+  .nav-group, .nav-group + .nav-group { display: contents; margin-top: 0; }
   .nav-item { flex-direction: column; gap: 2px; padding: 6px 10px; min-width: 56px; }
   .titlebar-title { display: none; }
   .content { padding-bottom: 96px; }

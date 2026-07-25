@@ -2,9 +2,9 @@
 // config.hermesDir. LECTURAS: archivos JSON/MD + sqlite en modo read-only.
 // Itera (default) + profiles/*, patrón validado en minipc-dashboard/collectors/hermes.js.
 // No abre ningún sqlite en escritura ni depende de hermes-webui (:8787).
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
-import { writeFile, copyFile, stat, readdir, rename } from 'node:fs/promises';
+import { writeFile, copyFile, stat, readdir, rename, mkdir } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { AgentAdapter } from '../AgentAdapter.js';
 import {
@@ -35,11 +35,32 @@ function readSqlite(path, fn) {
   }
 }
 
+// Truncado de args para el registro de ejecuciones: los prompts pueden pesar
+// varios KB y no queremos el ledger lleno de texto del modelo.
+const ARG_CAP = 400;
+const trimArgv = (args) => (args || []).map((a) => {
+  const s = String(a);
+  return s.length > ARG_CAP ? `${s.slice(0, ARG_CAP)}…(+${s.length - ARG_CAP})` : s;
+});
+
+// Un path REL está dentro de ROOT si resuelve a root mismo o a algo bajo root/.
+// `full.startsWith(root)` no alcanza: "/x/vault-otro" empieza con "/x/vault".
+function insideRoot(root, rel) {
+  if (!root || !rel || typeof rel !== 'string') return null;
+  const base = resolve(root);
+  const full = resolve(base, rel);
+  return (full === base || full.startsWith(base + sep)) ? full : null;
+}
+
 export class HermesAdapter {
-  constructor(dir, bin = 'hermes', vault = null) {
+  // `hooks` inyecta la telemetría de ejecuciones ({startRun, endRun}). Se pasa
+  // por constructor a propósito: el adapter no importa el estado propio del
+  // Agent OS (db.js) y esa separación se mantiene.
+  constructor(dir, bin = 'hermes', vault = null, hooks = {}) {
     this.dir = dir;
     this.bin = bin;
     this.vault = vault;
+    this.hooks = hooks;
     this.name = 'hermes';
   }
 
@@ -52,8 +73,19 @@ export class HermesAdapter {
   // {ok, stdout, stderr, code}. Es la ÚNICA vía de escritura hacia el agente.
   // OJO: el CLI a veces sale con código 0 aunque falle (imprime "Failed…"/"Error…"
   // en stdout), así que `ok` también inspecciona el texto.
-  _run(profile, args, { timeout = 90_000 } = {}) {
-    return new Promise((resolve) => {
+  // Cada corrida queda registrada vía hooks (kind/argv/modelo/duración/error).
+  // El registro es best-effort: si la telemetría falla, la ejecución sigue.
+  _run(profile, args, { timeout = 90_000, kind = null, trigger = 'api' } = {}) {
+    const mi = args.indexOf('-m');
+    const runId = this.hooks.startRun?.({
+      kind: kind || String(args[0] || 'other'),
+      profile: profile || '(default)',
+      argv: trimArgv(args),
+      model: mi >= 0 ? args[mi + 1] : null,
+      trigger,
+    }) ?? null;
+    const t0 = Date.now();
+    return new Promise((done) => {
       execFile(this.bin, args, {
         env: {
           ...process.env,
@@ -66,7 +98,17 @@ export class HermesAdapter {
       }, (err, stdout, stderr) => {
         const out = (stdout || '').trim();
         const softFail = /^(failed\b|error\b|error:)/im.test(out);
-        resolve({ ok: !err && !softFail, code: err?.code ?? 0, stdout: out, stderr: (stderr || '').trim() });
+        const r = { ok: !err && !softFail, code: err?.code ?? 0, stdout: out, stderr: (stderr || '').trim() };
+        this.hooks.endRun?.(runId, {
+          ms: Date.now() - t0,
+          ok: r.ok,
+          code: r.code,
+          // El softFail no deja err de execFile: sin esto una falla del CLI con
+          // exit 0 quedaba registrada como error vacío.
+          err: r.ok ? null : (err?.message || r.stderr || out.slice(0, 200) || 'soft-fail'),
+          out_chars: out.length,
+        });
+        done(r);
       });
     });
   }
@@ -369,8 +411,12 @@ export class HermesAdapter {
   }
 
   // --- Escrituras: kanban (board-aware; --board es flag global del subcomando) ---
+  // SIEMPRE explícito, incluso para "default": sin --board el CLI usa el board
+  // ACTUAL (el de `kanban boards switch`, que puede ser cualquiera), así que
+  // omitirlo mandaba la acción al board equivocado — o fallaba con "no such
+  // task" — cada vez que el board actual no era el default.
   _kb(board, rest) {
-    return ['kanban', ...(board && board !== 'default' ? ['--board', String(board)] : []), ...rest];
+    return ['kanban', '--board', String(board || 'default'), ...rest];
   }
 
   async kanbanCreate(profile, { title, body, assignee, priority, project, triage, board }) {
@@ -382,6 +428,34 @@ export class HermesAdapter {
     if (project) rest.push('--project', String(project));
     if (triage) rest.push('--triage');
     return this._run(profile, this._kb(board, rest));
+  }
+
+  // Detalle COMPLETO de una tarea. Hermes ya lo arma todo junto (task, comments,
+  // events, runs, parents, children), así que no hace falta rearmar los joins
+  // contra el sqlite del board — que además cambia de path según el board.
+  async kanbanShow(profile, id, board) {
+    if (!ID_RE.test(id || '')) return { ok: false, error: 'id inválido' };
+    const r = await this._run(profile, this._kb(board, ['show', '--json', String(id)]));
+    if (!r.ok) return { ok: false, error: r.stderr || r.stdout };
+    try {
+      // El CLI puede anteponer líneas de arranque (ej. "Bitwarden: applied N
+      // secrets") antes del JSON → recortar desde la primera llave.
+      const s = r.stdout.indexOf('{');
+      const e = r.stdout.lastIndexOf('}');
+      if (s < 0 || e <= s) throw new Error('sin JSON en la salida');
+      return { ok: true, ...JSON.parse(r.stdout.slice(s, e + 1)) };
+    } catch (err) {
+      return { ok: false, error: `no se pudo parsear la salida: ${err.message}` };
+    }
+  }
+
+  // Log crudo del worker que ejecutó la tarea. Es EFÍMERO: muchas tareas no
+  // tienen archivo (rotado o nunca generado) → `ok:false` es un caso normal.
+  async kanbanLog(profile, id, board, tail = 200) {
+    if (!ID_RE.test(id || '')) return { ok: false, error: 'id inválido' };
+    const n = Math.max(1, Math.min(2000, Number(tail) || 200));
+    const r = await this._run(profile, this._kb(board, ['log', '--tail', String(n), String(id)]));
+    return r.ok ? { ok: true, text: r.stdout } : { ok: false, error: r.stderr || r.stdout || 'sin log' };
   }
 
   async kanbanComment(profile, id, text, board) {
@@ -711,12 +785,40 @@ export class HermesAdapter {
   // Lee un archivo del vault (validado dentro del vault, solo .md).
   async getObsidianFile(rel) {
     if (!this.vault) return { ok: false };
-    if (!rel || !rel.endsWith('.md') || rel.includes('..')) return { ok: false, error: 'path inválido' };
-    const full = join(this.vault, rel);
-    if (!full.startsWith(this.vault)) return { ok: false, error: 'fuera del vault' };
+    if (!rel || !rel.endsWith('.md')) return { ok: false, error: 'path inválido' };
+    const full = insideRoot(this.vault, rel);
+    if (!full) return { ok: false, error: 'fuera del vault' };
     const text = await readText(full);
     if (text == null) return { ok: false, error: 'no se pudo leer' };
     return { ok: true, rel, text };
+  }
+
+  // --- Única escritura permitida al vault: la carpeta rem/ ------------------
+  // El vault es memoria Tier 2/3 y sigue siendo read-only salvo por este
+  // namespace propio del Agent OS. daily/, decisions/, living/ y mama/ los
+  // escribe Hermes por su cuenta; pisarlos desde acá es cómo se duplicaron los
+  // headings de daily/2026-07-07.md. La whitelist es de PREFIJO RESUELTO, así
+  // que "rem/../living/identity.md" tampoco pasa.
+  async writeObsidian(rel, text) {
+    if (!this.vault) return { ok: false, error: 'sin vault configurado' };
+    if (!rel || !rel.endsWith('.md')) return { ok: false, error: 'path inválido' };
+    const remRoot = join(resolve(this.vault), 'rem');
+    const full = insideRoot(remRoot, rel.startsWith('rem/') ? rel.slice(4) : rel);
+    if (!full || !rel.startsWith('rem/')) return { ok: false, error: 'solo se puede escribir en rem/' };
+    const body = String(text ?? '');
+    try {
+      await mkdir(remRoot, { recursive: true });
+      // Sin backup .bak a propósito (a diferencia de cronSetModel/writeMemory,
+      // que tocan estado de Hermes): esta nota es salida nuestra, regenerable e
+      // idempotente, y el vault se replica por SyncThing — un .bak por corrida
+      // es basura que se sincroniza a todas las máquinas.
+      const tmp = `${full}.agentos.tmp`;
+      await writeFile(tmp, body, 'utf8');
+      await rename(tmp, full);                                     // escritura atómica
+      return { ok: true, rel, path: full, bytes: Buffer.byteLength(body) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   }
 
   // --- Dreaming cockpit (journey / insights / curator) ---

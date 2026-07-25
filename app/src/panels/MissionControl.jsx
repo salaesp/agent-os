@@ -9,6 +9,8 @@ export function MissionControl() {
   const { data, error, loading, reload } = useApi('/api/goals', 30000);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [ideating, setIdeating] = useState(null); // id del objetivo en ideación
+  const [msg, setMsg] = useState(null);
 
   if (loading) return <Loading />;
   if (error) return <><PageHead title="Mission Control" /><ErrorBox error={error} /></>;
@@ -18,6 +20,17 @@ export function MissionControl() {
     try { await post(path, body); reload(); } finally { setBusy(false); }
   };
 
+  // Ideación divergente: varias pasadas del modelo con ángulos distintos sobre el
+  // objetivo. Tarda (minutos), y lo que sale cae en Sugerencias listo para aplicar.
+  const ideate = async (g) => {
+    setIdeating(g.id); setMsg(null);
+    try {
+      const r = await post('/api/ideate', { goalId: g.id });
+      setMsg({ ok: true, text: `${r.created} idea(s) sobre «${r.goal}» → mirá Sugerencias (ángulos: ${(r.frames || []).join(', ')})` });
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    finally { setIdeating(null); }
+  };
+
   return (
     <>
       <PageHead title="Mission Control" sub={`${data.length} objetivos · ${data.filter((g) => g.status === 'active').length} activos`}>
@@ -25,19 +38,21 @@ export function MissionControl() {
       </PageHead>
 
       {creating && <GoalForm onCancel={() => setCreating(false)} onSubmit={async (f) => { await mutate('/api/goals/create', f); setCreating(false); }} />}
+      {ideating && <div class="card" style="margin-bottom:12px"><div class="muted">Pensando el objetivo desde varios ángulos a la vez (regulador, biólogo, speedrunner…). Son varias pasadas del modelo: puede tardar unos minutos.</div></div>}
+      {msg && <div class="card" style={`margin-bottom:12px;border-color:${msg.ok ? 'var(--ok)' : 'var(--err)'}`}><span class="mono" style="font-size:12px">{msg.ok ? '✓ ' : '✕ '}{msg.text}</span></div>}
 
       {data.length === 0 && !creating && (
         <div class="card"><div class="muted">Todavía no hay objetivos. Creá uno de mediano plazo (semanas): definí el brief, tu rol, el rol del agente y seguí el progreso.</div></div>
       )}
 
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
-        {data.map((g) => <GoalCard key={g.id} g={g} busy={busy} mutate={mutate} />)}
+        {data.map((g) => <GoalCard key={g.id} g={g} busy={busy} mutate={mutate} ideate={ideate} ideating={ideating} />)}
       </div>
     </>
   );
 }
 
-function GoalCard({ g, busy, mutate }) {
+function GoalCard({ g, busy, mutate, ideate, ideating }) {
   const [edit, setEdit] = useState(false);
   const [closing, setClosing] = useState(false);
   const [outcomeDraft, setOutcomeDraft] = useState('');
@@ -102,6 +117,13 @@ function GoalCard({ g, busy, mutate }) {
             <button class={g.status === s ? 'on' : ''} disabled={busy} onClick={() => setStatus(s)} key={s}>{STATUS_ES[s]}</button>
           ))}
         </div>
+        {g.status === 'active' && (
+          <button class="chip" disabled={busy || !!ideating} onClick={() => ideate(g)}
+            title="Pensar este objetivo desde varios ángulos distintos y dejar las mejores ideas en Sugerencias">
+            <span class="msr" style={`font-size:14px;color:var(--gold);${ideating === g.id ? 'animation:spin 1s linear infinite' : ''}`}>{ideating === g.id ? 'progress_activity' : 'neurology'}</span>
+            {ideating === g.id ? 'Pensando…' : 'Ideas'}
+          </button>
+        )}
         <button class="chip" disabled={busy} onClick={() => setEdit(true)}><span class="msr" style="font-size:14px">edit</span></button>
         <button class="chip" disabled={busy} style="color:var(--err)" onClick={() => { if (confirm(`¿Eliminar "${g.title}"?`)) mutate('/api/goals/delete', { id: g.id }); }}><span class="msr" style="font-size:14px">delete</span></button>
       </div>
@@ -128,9 +150,11 @@ function GoalForm({ goal, onSubmit, onCancel }) {
       <div style="display:grid;gap:10px;margin-top:10px">
         <div class="search"><input placeholder="Título del objetivo (ej: sumar 1000 subs)" value={f.title} onInput={set('title')} /></div>
         <div class="search"><input placeholder="Brief — qué se busca y por qué" value={f.brief} onInput={set('brief')} /></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div class="search"><input placeholder="Tu rol" value={f.my_role} onInput={set('my_role')} /></div>
-          <div class="search"><input placeholder="Rol del agente" value={f.agent_role} onInput={set('agent_role')} /></div>
+        {/* min-width:0 — .search trae min-width:180px y en columnas de ~140px
+            (card de 320px) desbordaría la tarjeta. */}
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+          <div class="search" style="min-width:0"><input placeholder="Tu rol" value={f.my_role} onInput={set('my_role')} /></div>
+          <div class="search" style="min-width:0"><input placeholder="Rol del agente" value={f.agent_role} onInput={set('agent_role')} /></div>
         </div>
         <label style="font-size:12px;color:var(--text-2)">Fecha meta (opcional)
           <div class="search" style="margin-top:4px"><input type="date" value={f.target_date} onInput={set('target_date')} /></div>

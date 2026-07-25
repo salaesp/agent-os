@@ -45,6 +45,8 @@ export const config = {
   docsDir: env('DOCS_DIR', join(import.meta.dirname, '..', 'docs')),
   // Code graph: raíz donde buscar proyectos (dirs con package.json).
   codeGraphRoot: env('CODE_GRAPH_ROOT', join(HOME, 'code')),
+  // Consola web: binario de Claude Code que se levanta dentro del workspace elegido.
+  claudeBin: env('CLAUDE_BIN', join(HOME, '.local', 'bin', 'claude')),
 
   // Estado PROPIO del Agent OS (objetivos, alertas, índice de docs, roi). Separado
   // de los sqlite de Hermes. (Se usa a partir de la fase de escrituras.)
