@@ -6,7 +6,12 @@
   "private": true,
   "scripts": {
     "start": "node --experimental-sqlite src/server.js",
-    "dev": "node --experimental-sqlite --watch src/server.js"
+    "dev": "node --experimental-sqlite --watch src/server.js",
+    "typecheck": "node --check src/conversations.js && node --check src/conversations-cli.js && node --check src/server.js && node --check src/adapters/hermes/HermesAdapter.js && node --check test/conversations.test.js",
+    "conversations:ingest": "node --experimental-sqlite src/conversations-cli.js ingest",
+    "conversations:rebuild": "node --experimental-sqlite src/conversations-cli.js rebuild",
+    "conversations:status": "node --experimental-sqlite src/conversations-cli.js status",
+    "test:conversations": "node --experimental-sqlite --test test/conversations.test.js"
   },
   "engines": {
     "node": ">=22.5"

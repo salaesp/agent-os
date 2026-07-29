@@ -938,21 +938,24 @@ export class HermesAdapter {
     const ftsQ = `"${q.replace(/"/g, '""')}"`; // phrase match, a prueba de sintaxis
     const profiles = await this._profiles();
 
-    // Sesiones (FTS sobre messages, uniendo a sessions para el título).
-    const sessions = [];
-    for (const p of profiles) {
-      const rows = readSqlite(join(p.path, 'state.db'), (db) => db.prepare(
-        `SELECT m.session_id AS sid, m.role, m.timestamp AS ts,
-                snippet(messages_fts, 0, '«', '»', '…', 8) AS snip,
-                s.title, s.source
-         FROM messages_fts f
-         JOIN messages m ON m.rowid = f.rowid
-         LEFT JOIN sessions s ON s.id = m.session_id
-         WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?`).all(ftsQ, limit));
-      for (const r of rows || []) sessions.push({
-        profile: p.name, sessionId: r.sid, role: r.role, ts: r.ts,
-        snippet: r.snip, title: r.title || r.source || 'sesión',
-      });
+    // La proyección Tier 2 evita duplicados entre sesiones de gateway y perfiles.
+    // Fallback al FTS de Hermes conserva compatibilidad si el índice local no fue inyectado.
+    let sessions = this.hooks.searchConversations?.(q, limit) ?? null;
+    if (!Array.isArray(sessions)) {
+      sessions = [];
+      for (const p of profiles) {
+        const rows = readSqlite(join(p.path, 'state.db'), (db) => db.prepare(
+          `SELECT m.session_id AS sid, m.role, m.timestamp AS ts,
+                  snippet(messages_fts, 0, '«', '»', '…', 8) AS snip,
+                  s.title, s.source
+           FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+           LEFT JOIN sessions s ON s.id = m.session_id
+           WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?`).all(ftsQ, limit));
+        for (const r of rows || []) sessions.push({
+          profile: p.name, sessionId: r.sid, role: r.role, ts: r.ts,
+          snippet: r.snip, title: r.title || r.source || 'sesión',
+        });
+      }
     }
 
     // Memorias (Tier 1 + SOUL) por substring, case-insensitive.

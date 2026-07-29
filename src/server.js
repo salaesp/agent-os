@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, normalize, extname } from 'node:path';
 import { config } from './config.js';
+import { ingestConversations, searchConversationIndex, rebuildConversationIndex, conversationIndexStatus } from './conversations.js';
 import { HermesAdapter } from './adapters/hermes/HermesAdapter.js';
 import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting, getProfile, setProfile, clearSuggestions, deleteSuggestion } from './db.js';
 import { getInbox, generateSuggestions, applySuggestion, applySuggestions, dismissSuggestion, dismissSuggestions, snoozeSuggestion, restoreSuggestion, sendMorningBrief, quickAction } from './suggestions.js';
@@ -25,8 +26,14 @@ import { detectSoftware } from './onboarding.js';
 import { listProjects, buildGraph } from './codegraph.js';
 import { listWorkspaces, getSessions as getTermSessions, killSession, resizeSession, writeInput, attachStream } from './terminal.js';
 
-// Los hooks inyectan el registro de ejecuciones: el adapter no importa db.js.
-const adapter = new HermesAdapter(config.hermesDir, config.hermesBin, config.obsidianVault, { startRun, endRun });
+// La proyección local se actualiza antes de exponer búsquedas. state.db se abre read-only.
+const conversationIngest = ingestConversations();
+if (!conversationIngest.ok) console.error('[conversations]', conversationIngest.error);
+
+// Los hooks mantienen al adapter desacoplado del sqlite propio de Agent OS.
+const adapter = new HermesAdapter(config.hermesDir, config.hermesBin, config.obsidianVault, {
+  startRun, endRun, searchConversations: searchConversationIndex,
+});
 adapter.gatewayUrl = config.gatewayApiUrl;
 adapter.gatewayKey = config.gatewayApiKey;
 
@@ -323,6 +330,11 @@ const handler = async (req, res) => {
       }
       if (path === '/api/goals/delete') return sendJson(res, deleteGoal(body.id));
       if (path === '/api/docs/delete') { const r = await deleteDoc(body.path); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
+      if (path === '/api/conversations/rebuild') {
+        const r = rebuildConversationIndex();
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : 500);
+      }
       if (path === '/api/settings/set') {
         if (!body.key) return sendJson(res, { error: 'key requerida' }, 400);
         const r = setSetting(body.key, body.value ?? '');
@@ -347,6 +359,8 @@ const handler = async (req, res) => {
         runs: listRuns({ day: url.searchParams.get('day') || null, limit: 200 }),
       });
     }
+
+    if (path === '/api/conversations/status') return sendJson(res, conversationIndexStatus());
 
     // Mission Control (lectura, sin cache: es barato y local).
     if (path === '/api/goals') return sendJson(res, listGoals());
