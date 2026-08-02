@@ -48,6 +48,30 @@ db.exec(`
     created_at TEXT,
     decided_at TEXT
   );
+  -- Hallazgos técnicos de repositorios: aislados del inbox de proactividad.
+  CREATE TABLE IF NOT EXISTS code_suggestions (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    branch TEXT,
+    title TEXT NOT NULL,
+    rationale TEXT,
+    evidence TEXT,
+    next_step TEXT,
+    severity TEXT DEFAULT 'medium',
+    status TEXT DEFAULT 'new',
+    created_at TEXT,
+    decided_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_code_suggestions_project ON code_suggestions(project, status, created_at);
+  CREATE TABLE IF NOT EXISTS code_review_events (
+    id TEXT PRIMARY KEY,
+    finding_id TEXT NOT NULL,
+    action TEXT NOT NULL, -- found | task_created | done | dismissed
+    board TEXT,
+    detail TEXT,
+    created_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_code_review_events_finding ON code_review_events(finding_id, created_at);
   CREATE TABLE IF NOT EXISTS dreams (
     id TEXT PRIMARY KEY,
     kind TEXT,                 -- idea | patron | conexion | pregunta
@@ -112,6 +136,9 @@ for (const stmt of [
   "ALTER TABLE dreams ADD COLUMN promoted_to TEXT",
   "ALTER TABLE goals ADD COLUMN outcome TEXT",
   "ALTER TABLE goals ADD COLUMN done_at TEXT",
+  "ALTER TABLE code_suggestions ADD COLUMN task_board TEXT",
+  "ALTER TABLE code_suggestions ADD COLUMN task_created_at TEXT",
+  "ALTER TABLE code_suggestions ADD COLUMN next_step TEXT",
 ]) { try { db.exec(stmt); } catch { /* ya existe */ } }
 
 const now = () => new Date().toISOString();
@@ -262,6 +289,43 @@ export function clearSuggestions(scope = 'all') {
 }
 export function deleteSuggestion(id) {
   const r = db.prepare('DELETE FROM suggestions WHERE id = ?').run(id);
+  return { ok: r.changes > 0 };
+}
+
+// --- Revisión de código (no afecta preferencias ni el inbox personal) ---
+export function listCodeSuggestions() {
+  return db.prepare("SELECT * FROM code_suggestions ORDER BY (status='new') DESC, CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at DESC").all();
+}
+export function listCodeSuggestionEvents() {
+  return db.prepare('SELECT * FROM code_review_events ORDER BY created_at DESC').all();
+}
+function recordCodeSuggestionEvent(findingId, action, { board = null, detail = null } = {}) {
+  db.prepare('INSERT INTO code_review_events (id, finding_id, action, board, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(randomUUID().slice(0, 12), findingId, action, board, detail, now());
+}
+export function createCodeSuggestion(f) {
+  const id = randomUUID().slice(0, 12);
+  db.prepare(`INSERT INTO code_suggestions (id, project, branch, title, rationale, evidence, next_step, severity, status, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`)
+    .run(id, String(f.project || ''), f.branch || null, String(f.title || '').slice(0, 300), f.rationale || '', f.evidence || '', f.next_step || '',
+      ['low', 'medium', 'high'].includes(f.severity) ? f.severity : 'medium', now());
+  const finding = db.prepare('SELECT * FROM code_suggestions WHERE id = ?').get(id);
+  recordCodeSuggestionEvent(id, 'found', { detail: finding.title });
+  return finding;
+}
+export function setCodeSuggestionStatus(id, status) {
+  const next = ['new', 'dismissed', 'done'].includes(status) ? status : 'dismissed';
+  const r = db.prepare('UPDATE code_suggestions SET status = ?, decided_at = ? WHERE id = ?').run(next, now(), id);
+  if (r.changes > 0 && next !== 'new') recordCodeSuggestionEvent(id, next);
+  return { ok: r.changes > 0 };
+}
+export function getCodeSuggestion(id) {
+  return db.prepare('SELECT * FROM code_suggestions WHERE id = ?').get(id) || null;
+}
+export function linkCodeSuggestionTask(id, board) {
+  const r = db.prepare("UPDATE code_suggestions SET status = 'task_created', decided_at = ?, task_board = ?, task_created_at = ? WHERE id = ?")
+    .run(now(), String(board || 'default'), now(), id);
+  if (r.changes > 0) recordCodeSuggestionEvent(id, 'task_created', { board: String(board || 'default') });
   return { ok: r.changes > 0 };
 }
 

@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import { post, useApi } from '../api.js';
 import { PageHead, Loading, ErrorBox, rel } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 
 const CAT = { workflow: { icon: 'work', label: 'Workflow' }, vida: { icon: 'favorite', label: 'Vida' }, aprendizaje: { icon: 'school', label: 'Aprendizaje' } };
 const MODE = { push: 'empuje', queue: 'cola', store: 'silenciosa' };
@@ -33,6 +34,9 @@ export function Suggestions() {
   const [msg, setMsg] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [showCfg, setShowCfg] = useState(false);
+  const [showAutoCfg, setShowAutoCfg] = useState(false);
+  const [editModel, setEditModel] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
   const [asking, setAsking] = useState(null); // id de la sugerencia que está eligiendo motivo de descarte
   const [whyId, setWhyId] = useState(null); // id de la sugerencia con el "¿Por qué?" abierto
   const [selected, setSelected] = useState(new Set()); // ids marcados para la bandeja de decisiones en lote
@@ -101,6 +105,19 @@ export function Suggestions() {
     await post('/api/settings/set', { key: 'auto_suggest_enabled', value: data.auto?.enabled ? '0' : '1' });
     reload();
   };
+  const toggleDream = async () => {
+    await post('/api/settings/set', { key: 'auto_dream_enabled', value: data.auto?.dreamEnabled ? '0' : '1' });
+    reload();
+  };
+  const saveModel = async ({ model, provider }) => {
+    setModelBusy(true);
+    try {
+      await post('/api/settings/set', { key: 'auto_model', value: model || '' });
+      await post('/api/settings/set', { key: 'auto_provider', value: provider || '' });
+      setEditModel(false);
+      reload();
+    } finally { setModelBusy(false); }
+  };
 
   const active = data.suggestions.filter((s) => s.status === 'new');
   const decided = data.suggestions.filter((s) => s.status !== 'new').slice(0, 10);
@@ -152,8 +169,54 @@ export function Suggestions() {
               <b>Automático {data.auto.enabled ? 'ON' : 'OFF'}</b>
               <span class="muted">· de noche ({data.auto.nightlyHour}h) y en límites de tarea · {data.auto.genToday}/{data.auto.dailyCap} hoy{data.auto.lastGenAt ? ` · última ${rel(data.auto.lastGenAt)}` : ''}</span>
             </div>
-            <button class={`chip filter-chip ${data.auto.enabled ? 'on' : ''}`} onClick={toggleAuto}>{data.auto.enabled ? 'Desactivar' : 'Activar'}</button>
+            <div class="wrap">
+              <button class="chip small" onClick={() => setShowAutoCfg((v) => !v)}>
+                <span class="msr" style="font-size:14px">{showAutoCfg ? 'expand_less' : 'tune'}</span>{showAutoCfg ? 'ocultar' : 'ajustar'}
+              </button>
+              <button class={`chip filter-chip ${data.auto.enabled ? 'on' : ''}`} onClick={toggleAuto}>{data.auto.enabled ? 'Desactivar' : 'Activar'}</button>
+            </div>
           </div>
+
+          {showAutoCfg && (
+            <>
+              <div class="spread" style="padding:10px 0 0;margin-top:10px;border-top:1px solid var(--hairline)">
+                <div><b style="font-size:13px">Dreaming nocturno</b><div class="muted" style="font-size:11px">ideas/patrones creativos, corre en el mismo bundle</div></div>
+                <button class={`chip filter-chip ${data.auto.dreamEnabled ? 'on' : ''}`} onClick={toggleDream}>{data.auto.dreamEnabled ? 'ON' : 'OFF'}</button>
+              </div>
+
+              <div class="spread" style="padding:10px 0;border-top:1px solid var(--hairline)">
+                <span class="muted" style="font-size:12px">Hora del bundle nocturno</span>
+                <div class="seg">{[6, 7, 8, 9, 10].map((h) => <button class={data.auto.nightlyHour === h ? 'on' : ''} onClick={() => setCfg('auto_nightly_hour', String(h))} key={h}>{h}h</button>)}</div>
+              </div>
+              <div class="spread" style="padding:10px 0;border-top:1px solid var(--hairline)">
+                <span class="muted" style="font-size:12px">Tope de generaciones/día</span>
+                <div class="seg">{[2, 3, 4, 5].map((n) => <button class={data.auto.dailyCap === n ? 'on' : ''} onClick={() => setCfg('auto_daily_cap', String(n))} key={n}>{n}</button>)}</div>
+              </div>
+              <div class="spread" style="padding:10px 0;border-top:1px solid var(--hairline)">
+                <div><span class="muted" style="font-size:12px">Intervalo mínimo entre generaciones de borde</span></div>
+                <div class="seg">{[2, 4, 6, 8, 12, 24, 48].map((n) => <button class={data.auto.minIntervalH === n ? 'on' : ''} onClick={() => setCfg('auto_min_interval_h', String(n))} key={n}>{n}h</button>)}</div>
+              </div>
+
+              <div style="padding:10px 0 0;margin-top:2px;border-top:1px solid var(--hairline)">
+                <div class="wrap">
+                  <span class="muted" style="font-size:12px">Modelo</span>
+                  <span class="chip small mono">{data.auto.model || 'modelo del perfil'}</span>
+                  {data.auto.provider && <span class="chip small">{data.auto.provider}</span>}
+                  {!editModel && (
+                    <button class="chip small" onClick={() => setEditModel(true)}>
+                      <span class="msr" style="font-size:14px">edit</span>cambiar
+                    </button>
+                  )}
+                </div>
+                {editModel && (
+                  <div style="margin-top:8px;max-width:520px">
+                    <ModelPicker model={data.auto.model} provider={data.auto.provider} inherit busy={modelBusy} onSave={saveModel} onCancel={() => setEditModel(false)} />
+                  </div>
+                )}
+                <div class="muted" style="font-size:11px;margin-top:8px">Modelo usado por la generación nocturna de sugerencias y dreaming (y por el disparo en límites de tarea). «Heredar» usa el default del perfil de Hermes.</div>
+              </div>
+            </>
+          )}
         </div>
       )}
       {gen && <div class="card" style="margin-bottom:12px"><div class="muted">El agente está analizando tu contexto (sesiones, kanban, objetivos, memoria, digest) para proponerte cosas. Puede tardar un rato…</div></div>}

@@ -4,12 +4,13 @@ import { PageHead, Loading, ErrorBox, rel } from '../components/ui.jsx';
 import { Markdown } from '../components/Markdown.jsx';
 import { routeParam } from '../route.js';
 
-const ICON = { html: 'code', markdown: 'article', text: 'description', data: 'data_object', image: 'image', pdf: 'picture_as_pdf', other: 'draft' };
-const TYPES = ['todos', 'html', 'markdown', 'text', 'data', 'image', 'pdf', 'other'];
+const ICON = { html: 'code', markdown: 'article', text: 'description', data: 'data_object', image: 'image', pdf: 'picture_as_pdf', audio: 'headphones', other: 'draft' };
+const TYPES = ['todos', 'html', 'markdown', 'text', 'data', 'image', 'pdf', 'audio', 'other'];
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 
 export function Docs() {
   const { data, error, loading, reload } = useApi('/api/docs', 8000);
+  const ttsAvailable = data?.ttsAvailable;
   const [type, setType] = useState('todos');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(null);
@@ -69,17 +70,29 @@ export function Docs() {
         </div>
       )}
 
-      {open && <Viewer doc={open} onClose={() => setOpen(null)} />}
+      {open && <Viewer doc={open} docs={data.docs} ttsAvailable={ttsAvailable} onClose={() => setOpen(null)} onReload={reload} />}
     </>
   );
 }
 
-function Viewer({ doc, onClose }) {
+const audioPathFor = (path) => path.replace(/\.(md|markdown|txt)$/i, '') + '.mp3';
+
+function Viewer({ doc, docs, ttsAvailable, onClose, onReload }) {
   const [content, setContent] = useState(null);
+  const [genState, setGenState] = useState('idle'); // idle | busy | error
   const isText = ['markdown', 'text', 'data', 'html'].includes(doc.type);
   if (isText && content === null) {
     get(`/api/docs/read?path=${encodeURIComponent(doc.path)}`).then((r) => setContent(r.ok ? r.content : `(no se pudo leer: ${r.error})`)).catch(() => setContent('(error)'));
   }
+  const canNarrate = ['markdown', 'text'].includes(doc.type);
+  const audioDoc = canNarrate ? docs.find((d) => d.path === audioPathFor(doc.path)) : null;
+
+  const generateAudio = async () => {
+    setGenState('busy');
+    const r = await post('/api/docs/tts', { path: doc.path });
+    if (r.ok) { setGenState('idle'); onReload(); } else { setGenState('error'); }
+  };
+
   return (
     <div onClick={onClose} style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;display:grid;place-items:center;padding:24px">
       <div onClick={(e) => e.stopPropagation()} class="card" style="max-width:900px;width:100%;max-height:86vh;overflow:auto;box-shadow:var(--shadow)">
@@ -87,8 +100,22 @@ function Viewer({ doc, onClose }) {
           <div><h3>{doc.name}</h3><span class="muted mono" style="font-size:11px">{doc.path}</span></div>
           <button class="chip" onClick={onClose}><span class="msr" style="font-size:16px">close</span></button>
         </div>
+        {canNarrate && ttsAvailable && (
+          <div style="margin-bottom:12px">
+            {audioDoc ? (
+              <audio controls style="width:100%" src={`/api/docs/raw?path=${encodeURIComponent(audioDoc.path)}`} />
+            ) : (
+              <button class="chip small" disabled={genState === 'busy'} onClick={generateAudio}>
+                <span class="msr" style="font-size:14px">headphones</span>
+                {genState === 'busy' ? 'Generando audio…' : 'Generar audio'}
+              </button>
+            )}
+            {genState === 'error' && <div class="muted" style="color:var(--err);font-size:11.5px;margin-top:4px">No se pudo generar el audio.</div>}
+          </div>
+        )}
         {doc.type === 'image' && <img src={`/api/docs/raw?path=${encodeURIComponent(doc.path)}`} style="max-width:100%;border-radius:var(--radius-m)" />}
         {doc.type === 'pdf' && <embed src={`/api/docs/raw?path=${encodeURIComponent(doc.path)}`} type="application/pdf" style="width:100%;height:70vh;border-radius:var(--radius-m)" />}
+        {doc.type === 'audio' && <audio controls style="width:100%" src={`/api/docs/raw?path=${encodeURIComponent(doc.path)}`} />}
         {doc.type === 'html' && content != null && <iframe srcDoc={content} sandbox="" style="width:100%;height:65vh;border:1px solid var(--hairline);border-radius:var(--radius-m);background:#fff" />}
         {doc.type === 'markdown' && content != null && <Markdown text={content} />}
         {(doc.type === 'text' || doc.type === 'data') && content != null && <pre style="white-space:pre-wrap;font-family:var(--mono);font-size:12px;background:var(--panel-2);padding:14px;border-radius:var(--radius-m)">{content}</pre>}

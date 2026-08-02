@@ -1,9 +1,10 @@
 // Gestor de documentos: refleja los archivos de config.docsDir en el dashboard.
 // Cualquier cosa que el agente (o vos) guarden ahí aparece con preview/filtro/
 // borrado. Validación estricta contra path traversal.
-import { readdir, readFile, stat, unlink, mkdir } from 'node:fs/promises';
+import { readdir, readFile, stat, unlink, mkdir, writeFile } from 'node:fs/promises';
 import { join, extname, relative, resolve, sep } from 'node:path';
 import { config } from './config.js';
+import { synthesize } from './tts.js';
 
 await mkdir(config.docsDir, { recursive: true }).catch(() => {});
 const ROOT = resolve(config.docsDir);
@@ -15,11 +16,13 @@ const TYPE_BY_EXT = {
   '.json': 'data', '.csv': 'data', '.yaml': 'data', '.yml': 'data', '.tsv': 'data',
   '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.svg': 'image', '.webp': 'image',
   '.pdf': 'pdf',
+  '.mp3': 'audio', '.wav': 'audio', '.ogg': 'audio',
 };
 const typeOf = (name) => TYPE_BY_EXT[extname(name).toLowerCase()] || 'other';
 const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.svg': 'image/svg+xml', '.webp': 'image/webp', '.pdf': 'application/pdf',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
 };
 
 // Resuelve un path relativo de forma segura DENTRO de ROOT. null si escapa.
@@ -71,6 +74,24 @@ export async function rawDoc(rel) {
   const data = await readFile(full).catch(() => null);
   if (!data) return null;
   return { data, mime: MIME[extname(full).toLowerCase()] || 'application/octet-stream' };
+}
+
+// Genera el audio de un doc de texto/markdown ya existente (mismo nombre, .mp3
+// al lado). Cuesta plata (OpenRouter TTS) — por eso es una acción manual, no
+// automática al guardar el doc.
+export async function generateAudioDoc(rel) {
+  const full = safe(rel);
+  if (!full) return { ok: false, error: 'path inválido' };
+  const type = typeOf(full);
+  if (!['markdown', 'text'].includes(type)) return { ok: false, error: 'solo markdown/texto' };
+  const raw = await readFile(full, 'utf8').catch(() => null);
+  if (raw == null) return { ok: false, error: 'no se pudo leer' };
+  const plain = raw.replace(/^---[\s\S]*?---/, '').replace(/[#>*`_]/g, '').trim();
+  const r = await synthesize(plain);
+  if (!r.ok) return r;
+  const audioRel = rel.replace(/\.(md|markdown|txt)$/i, '') + '.mp3';
+  await writeFile(join(ROOT, audioRel), r.buffer);
+  return { ok: true, path: audioRel };
 }
 
 export async function deleteDoc(rel) {

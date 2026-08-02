@@ -93,17 +93,7 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9áéíóúñ 
 // Lock global: manual y scheduler NO deben generar en paralelo (contención del modelo).
 let generating = false;
 
-export async function generateSuggestions(adapter, { trigger = 'manual' } = {}) {
-  if (generating) return { ok: false, error: 'ya hay una generación en curso', created: 0, busy: true };
-  generating = true;
-  try {
-    return await _generateSuggestions(adapter, { trigger });
-  } finally {
-    generating = false;
-  }
-}
-
-async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
+async function buildGenerationInputs(adapter) {
   const ctx = await buildContext(adapter);
   // Dedup dirigido: pasarle al modelo lo que ya está en el inbox + lo descartado (activo).
   const inboxTitles = listSuggestions().filter((s) => s.status === 'new' || s.status === 'snoozed').map((s) => s.title);
@@ -125,11 +115,30 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
     ? `\n\nANTI-BURBUJA: incluí al menos 1 sugerencia de estas categorías que el usuario viene ignorando (para no encerrarlo): ${[...exploreCats].join(', ')}.\n`
     : '';
 
-  const gen = await adapter.generateRawSuggestions(buildPrompt(ctx, avoid, affinityHint(affinity) + exploreHint));
+  return { ctx, avoid, negativeTitles, exploreCats, affinity, hint: affinityHint(affinity) + exploreHint };
+}
+
+export async function generateSuggestions(adapter, { trigger = 'manual' } = {}) {
+  if (generating) return { ok: false, error: 'ya hay una generación en curso', created: 0, busy: true };
+  generating = true;
+  try {
+    return await _generateSuggestions(adapter, { trigger });
+  } finally {
+    generating = false;
+  }
+}
+
+async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
+  const { ctx, avoid, negativeTitles, exploreCats, affinity, hint } = await buildGenerationInputs(adapter);
+  const model = getSetting('auto_model', '') || undefined;
+  const gen = await adapter.generateRawSuggestions(buildPrompt(ctx, avoid, hint), { model });
   if (!gen.ok) return { ok: false, error: gen.error || 'falló la generación', created: 0 };
   const arr = extractJsonArray(gen.text);
   if (!Array.isArray(arr)) return { ok: false, error: 'la respuesta no fue JSON válido', created: 0, raw: (gen.text || '').slice(0, 300) };
+  return scoreAndStore(adapter, arr, { trigger, ctx, exploreCats, negativeTitles, affinity, avoidCount: avoid.length });
+}
 
+async function scoreAndStore(adapter, arr, { trigger, ctx, exploreCats, negativeTitles, affinity, avoidCount }) {
   // Backstop por string (por si el modelo igual repite algo).
   const existing = new Set(listSuggestions().filter((s) => s.status !== 'applied').map((s) => norm(s.title)));
   const negatives = negativeTitles.map(norm);
@@ -147,7 +156,7 @@ async function _generateSuggestions(adapter, { trigger = 'manual' } = {}) {
   // Rastro: qué entró a esta tanda. Se repite en cada candidato para que una
   // decisión sea legible sola, sin tener que reconstruir la corrida entera.
   const inputs = {
-    trigger, avoid: avoid.length, minScore, pesos: W,
+    trigger, avoid: avoidCount, minScore, pesos: W,
     contexto: { crons: ctx.crons?.length ?? 0, kanban: ctx.kanban?.tasks?.length ?? 0, sesiones: ctx.sessions?.length ?? 0, objetivos: ctx.goals?.length ?? 0 },
     exploreCats: [...exploreCats],
   };
@@ -303,6 +312,9 @@ export async function applySuggestion(adapter, id) {
         res = await adapter.cronCreate('(default)', { schedule: p.schedule, prompt: p.prompt, name: p.name || s.title, deliver: p.deliver, skills: p.skills });
         break;
       case 'kanban':
+        // `project` identifica el repo local para Agent OS, pero no se manda
+        // como --project a Hermes: ese flag refiere a su catálogo Kanban, que
+        // puede no tener un proyecto con el mismo nombre.
         res = await adapter.kanbanCreate('(default)', { title: p.title || s.title, body: p.body, board: p.board });
         break;
       case 'memory': {
@@ -416,10 +428,14 @@ export function getInbox() {
   const day = new Date().toISOString().slice(0, 10);
   const auto = {
     enabled: getSetting('auto_suggest_enabled', '1') === '1',
+    dreamEnabled: getSetting('auto_dream_enabled', '1') === '1',
     nightlyHour: Number(getSetting('auto_nightly_hour', '8')),
     lastGenAt: getSetting('sugg_last_gen_at', null),
     genToday: getSetting('sugg_gen_day', '') === day ? Number(getSetting('sugg_gen_count', '0')) : 0,
     dailyCap: Number(getSetting('auto_daily_cap', '3')),
+    minIntervalH: Number(getSetting('auto_min_interval_h', '4')),
+    model: getSetting('auto_model', '') || null,
+    provider: getSetting('auto_provider', '') || null,
   };
   const delivery = {
     pushEnabled: getSetting('push_enabled', '0') === '1',

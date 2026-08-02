@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { get } from '../api.js';
+import { get, post } from '../api.js';
 import { PageHead, Loading, ErrorBox } from '../components/ui.jsx';
 
 export function CodeGraph() {
@@ -8,6 +8,8 @@ export function CodeGraph() {
   const [graph, setGraph] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+  const [gitProjects, setGitProjects] = useState(null);
+  const [fetching, setFetching] = useState(null);
 
   useEffect(() => {
     get('/api/codegraph/projects').then((r) => {
@@ -16,6 +18,25 @@ export function CodeGraph() {
       if (def) setSel(def.path);
     }).catch((e) => setErr(e.message));
   }, []);
+
+  const reloadGit = () => get('/api/projects').then((r) => setGitProjects(r)).catch((e) => setErr(e.message));
+  useEffect(() => { reloadGit(); }, []);
+  const fetchRemote = async (path) => {
+    setFetching(path); setErr(null);
+    try { await post('/api/projects/fetch', { path }); reloadGit(); }
+    catch (e) { setErr(e.message); }
+    finally { setFetching(null); }
+  };
+  const toggleProject = async (path, enabled) => {
+    setFetching(path); setErr(null);
+    try { await post('/api/projects/enabled', { path, enabled }); reloadGit(); }
+    catch (e) { setErr(e.message); }
+    finally { setFetching(null); }
+  };
+  const toggleAutoFetch = async () => {
+    try { await post('/api/settings/set', { key: 'project_auto_fetch_enabled', value: gitProjects.autoFetch ? '0' : '1' }); reloadGit(); }
+    catch (e) { setErr(e.message); }
+  };
 
   useEffect(() => {
     if (!sel) return;
@@ -38,7 +59,36 @@ export function CodeGraph() {
       {err && <ErrorBox error={err} />}
       {loading && <Loading />}
       {graph && <Graph g={graph} />}
+      {gitProjects && <ProjectHealth data={gitProjects} fetching={fetching} onFetch={fetchRemote} onToggle={toggleProject} onToggleAutoFetch={toggleAutoFetch} />}
     </>
+  );
+}
+
+function ProjectHealth({ data, fetching, onFetch, onToggle, onToggleAutoFetch }) {
+  return (
+    <div class="card" style="margin-top:14px">
+      <div class="spread" style="margin-bottom:8px"><div><h3>Estado Git</h3><div class="muted" style="font-size:12px">Lectura local · actualizar remoto ejecuta sólo <span class="mono">git fetch --prune</span></div></div><div class="wrap"><button class={`chip small ${data.autoFetch ? 'filter-chip on' : ''}`} onClick={onToggleAutoFetch}>Fetch automático {data.autoFetch ? 'ON' : 'OFF'}</button><span class="chip small">{data.projects.length} repos</span></div></div>
+      {data.autoFetch && <div class="muted" style="font-size:11px;margin-bottom:8px">Cada {data.fetchIntervalH}h sobre los repos incluidos · nunca hace pull</div>}
+      {!data.projects.length && <div class="muted">No hay repositorios Git directos en esta carpeta.</div>}
+      <div class="list" style="background:transparent;border:none;gap:7px">
+        {data.projects.map((p) => {
+          const c = p.changes || {};
+          const docs = p.docs || {};
+          return <div class="spread" key={p.path} style="padding:9px 0;border-bottom:1px solid var(--hairline);align-items:flex-start">
+            <div style={`min-width:0;${p.enabled ? '' : 'opacity:.55'}`}><b>{p.name}</b> <span class="muted mono" style="font-size:11px">{p.branch}</span>
+              <div class="muted ellipsis" style="font-size:11.5px;margin-top:3px">{p.lastCommit?.subject || 'sin commits'}{p.primaryBranch ? ` · ${p.primaryBranch}: ${p.primaryBehind} detrás` : p.behind ? ` · ${p.behind} detrás` : ''}{p.ahead ? ` · ${p.ahead} adelante` : ''}</div>
+              <div class="wrap" style="margin-top:5px;gap:4px">
+                {c.dirty && <span class="chip small" style="color:var(--warn)">cambios locales {c.staged + c.modified + c.untracked}</span>}
+                {!docs.readme && <span class="chip small" style="color:var(--warn)">sin README</span>}
+                {!docs.docsDir && <span class="chip small">sin docs/</span>}
+                {c.conflicts > 0 && <span class="chip small" style="color:var(--bad)">conflictos</span>}
+              </div>
+            </div>
+            <div class="wrap" style="justify-content:flex-end"><button class={`chip small ${p.enabled ? 'filter-chip on' : ''}`} disabled={fetching === p.path} onClick={() => onToggle(p.path, !p.enabled)}>{p.enabled ? 'Incluido' : 'Excluido'}</button>{p.remote && <button class="chip small" disabled={fetching === p.path} onClick={() => onFetch(p.path)}>{fetching === p.path ? 'Actualizando…' : 'Actualizar remoto'}</button>}</div>
+          </div>;
+        })}
+      </div>
+    </div>
   );
 }
 

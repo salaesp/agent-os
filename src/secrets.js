@@ -33,30 +33,61 @@ function resolveToken() {
   return { token: null, source: null };
 }
 
-export function getSecrets() {
+// `bws secret list -o json` crudo (SÍ trae `value`) — privado, solo para los
+// dos consumidores de abajo. Nunca se devuelve tal cual hacia afuera.
+function runBwsList() {
   return new Promise((resolve) => {
     const { token, source } = resolveToken();
-    if (!token) return resolve({ ok: false, error: 'sin BWS_ACCESS_TOKEN', secrets: [] });
-    execFile(config.bwsBin, ['--color', 'no', 'secret', 'list', '-o', 'json'],
+    if (!token) return resolve({ ok: false, error: 'sin BWS_ACCESS_TOKEN', source, list: [] });
+    // Sin '--color','no' acá: config.bwsBin es un wrapper (~/.hermes/bin/bws)
+    // que ya lo fuerza — pasarlo de nuevo duplica el flag y bws lo rechaza.
+    execFile(config.bwsBin, ['secret', 'list', '-o', 'json'],
       { env: { ...process.env, BWS_ACCESS_TOKEN: token, NO_COLOR: '1' }, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
-        if (err && !stdout) return resolve({ ok: false, error: 'bws falló (¿CLI o token?)', secrets: [] });
+        if (err && !stdout) return resolve({ ok: false, error: 'bws falló (¿CLI o token?)', source, list: [] });
         // Defensa: bws 2.0.0 puede colorear con ANSI aún en pipe → limpiar antes de parsear.
         const clean = String(stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
         let arr;
-        try { arr = JSON.parse(clean); } catch { return resolve({ ok: false, error: 'salida no-JSON', secrets: [] }); }
-        // Mapear SIN el valor. Dedup por key+projectId.
-        const seen = new Set();
-        const secrets = [];
-        for (const s of arr) {
-          const projectId = s.projectId || s.project_id || null;
-          const dedup = `${s.key}|${projectId}`;
-          if (seen.has(dedup)) continue;
-          seen.add(dedup);
-          secrets.push({ id: s.id, key: s.key, category: categorize(s.key || ''), projectId, note: s.note || null });
-        }
-        secrets.sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key));
-        resolve({ ok: true, source, count: secrets.length, secrets });
+        try { arr = JSON.parse(clean); } catch { return resolve({ ok: false, error: 'salida no-JSON', source, list: [] }); }
+        resolve({ ok: true, source, list: arr });
       });
   });
+}
+
+export async function getSecrets() {
+  const r = await runBwsList();
+  if (!r.ok) return { ok: false, error: r.error, secrets: [] };
+  // Mapear SIN el valor. Dedup por key+projectId.
+  const seen = new Set();
+  const secrets = [];
+  for (const s of r.list) {
+    const projectId = s.projectId || s.project_id || null;
+    const dedup = `${s.key}|${projectId}`;
+    if (seen.has(dedup)) continue;
+    seen.add(dedup);
+    secrets.push({ id: s.id, key: s.key, category: categorize(s.key || ''), projectId, note: s.note || null });
+  }
+  secrets.sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key));
+  return { ok: true, source: r.source, count: secrets.length, secrets };
+}
+
+// Valor REAL de un secreto puntual — uso interno server-side únicamente
+// (nunca expuesto por ninguna ruta HTTP). Cachea 5 min para no pegarle a
+// `bws` en cada uso (mismo TTL default que usa Hermes de su lado).
+const VALUE_CACHE_TTL_MS = 5 * 60 * 1000;
+const valueCache = new Map(); // `${tokenFingerprint}|${key}` -> { value, ts }
+
+export async function getSecretValue(key) {
+  const { token } = resolveToken();
+  if (!token) return null;
+  const cacheKey = `${token.slice(-8)}|${key}`;
+  const hit = valueCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < VALUE_CACHE_TTL_MS) return hit.value;
+
+  const r = await runBwsList();
+  if (!r.ok) return null;
+  const match = r.list.find((s) => s.key === key);
+  const value = match ? match.value : null;
+  valueCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
 }

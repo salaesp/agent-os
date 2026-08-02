@@ -2,7 +2,7 @@
 // (conversaciones, memoria, objetivos, patrones) y devuelve IDEAS y PATRONES sobre
 // la vida del usuario — NO tareas concretas (eso es Sugerencias). Es el rincón de
 // mayor vuelo: "venís mencionando X, ¿probaste Y?", "conectando A con B, podrías…".
-import { createDream, listDreams, recentDreamTitles, getProfile, listGoals, getDream, createSuggestion, setDreamPromoted, recordDecision, listDecisions } from './db.js';
+import { createDream, listDreams, recentDreamTitles, getProfile, listGoals, getDream, createSuggestion, setDreamPromoted, recordDecision, listDecisions, getSetting } from './db.js';
 
 // Aterrizajes EN CURSO, por id de sueño. Vive en el server a propósito: la
 // llamada tarda ~1 min y si el estado viviera sólo en el browser, recargar la
@@ -26,13 +26,7 @@ function extractJsonArray(text) {
 
 let dreaming = false;
 
-export async function generateDreams(adapter) {
-  if (dreaming) return { ok: false, error: 'ya hay un dreaming en curso', created: 0, busy: true };
-  dreaming = true;
-  try { return await _dream(adapter); } finally { dreaming = false; }
-}
-
-async function _dream(adapter) {
+async function buildDreamInputs(adapter) {
   const profile = getProfile();
   const goals = listGoals().filter((g) => g.status === 'active');
   const [memory, sessions] = await Promise.all([
@@ -46,8 +40,11 @@ async function _dream(adapter) {
     if (txt) convos.push(txt);
   }
   const avoid = [...new Set([...recentDreamTitles(30), ...listDreams().filter((d) => d.status === 'new').map((d) => d.title)])];
+  return { profile, goals, mem, convos, avoid };
+}
 
-  const prompt = `Sos la parte "DREAMING" de un Agent OS personal: el rincón CREATIVO y ESTRATÉGICO. Mientras el usuario no mira, pensás en su vida y le devolvés IDEAS, PATRONES y CONEXIONES de mayor vuelo — NO tareas concretas ni acciones (eso es otra sección). Imaginativo pero anclado en SUS datos. Que dé ganas de pensar, no de ejecutar.
+function buildDreamPrompt({ profile, goals, mem, convos, avoid }) {
+  return `Sos la parte "DREAMING" de un Agent OS personal: el rincón CREATIVO y ESTRATÉGICO. Mientras el usuario no mira, pensás en su vida y le devolvés IDEAS, PATRONES y CONEXIONES de mayor vuelo — NO tareas concretas ni acciones (eso es otra sección). Imaginativo pero anclado en SUS datos. Que dé ganas de pensar, no de ejecutar.
 
 Podés: notar un patrón en sus semanas, conectar dos cosas suyas que no vio juntas, proponer una idea de vida/proyecto/aprendizaje que le pegue, hacer una pregunta que lo haga reflexionar.
 
@@ -63,12 +60,25 @@ NO repitas nada parecido a esto (ya se lo dijiste): ${avoid.slice(0, 25).join(' 
 
 Devolvé EXCLUSIVAMENTE un array JSON (sin texto extra, sin herramientas), 3 a 5 items:
 [{"kind":"idea|patron|conexion|pregunta","title":"frase corta y evocadora","body":"2-4 oraciones, imaginativo y anclado en sus datos"}]`;
+}
 
-  const gen = await adapter.generateRawSuggestions(prompt);
+export async function generateDreams(adapter) {
+  if (dreaming) return { ok: false, error: 'ya hay un dreaming en curso', created: 0, busy: true };
+  dreaming = true;
+  try { return await _dream(adapter); } finally { dreaming = false; }
+}
+
+async function _dream(adapter) {
+  const inputs = await buildDreamInputs(adapter);
+  const model = getSetting('auto_model', '') || undefined;
+  const gen = await adapter.generateRawSuggestions(buildDreamPrompt(inputs), { model });
   if (!gen.ok) return { ok: false, error: gen.error || 'falló el dreaming', created: 0 };
   const arr = extractJsonArray(gen.text);
   if (!Array.isArray(arr)) return { ok: false, error: 'respuesta no-JSON', created: 0, raw: (gen.text || '').slice(0, 200) };
+  return storeDreams(arr, inputs);
+}
 
+function storeDreams(arr, { goals, convos, avoid }) {
   const inputs = { objetivos: goals.length, sesiones: convos.length, evitados: avoid.length };
   let created = 0;
   for (const d of arr) {

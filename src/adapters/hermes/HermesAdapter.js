@@ -505,6 +505,24 @@ export class HermesAdapter {
     return this._run(profile, this._kb(board, ['dispatch', '--max', String(max), '--json']), { timeout: 30_000 });
   }
 
+  // Claim atómico ready → running. Usado por procesos de este repo (ej.
+  // investigator.js) que laburan una tarea en proceso propio en vez de vía
+  // dispatch/worker — así queda visible en el board mientras corre, igual
+  // que las tareas que sí pasan por el dispatcher.
+  async kanbanClaim(profile, id, board) {
+    if (!ID_RE.test(id || '')) return { ok: false, stderr: 'id inválido' };
+    return this._run(profile, this._kb(board, ['claim', String(id)]));
+  }
+
+  // Libera un claim (running → ready) cuando el trabajo en proceso propio
+  // falló, para no dejar la tarea trabada en running.
+  async kanbanReclaim(profile, id, board, reason) {
+    if (!ID_RE.test(id || '')) return { ok: false, stderr: 'id inválido' };
+    const rest = ['reclaim', String(id)];
+    if (reason) rest.push('--reason', String(reason).slice(0, 300));
+    return this._run(profile, this._kb(board, rest));
+  }
+
   async _profiles() {
     const profiles = [{ name: '(default)', path: this.dir }];
     for (const e of await listDirs(join(this.dir, 'profiles'))) {

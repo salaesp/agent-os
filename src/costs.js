@@ -56,7 +56,33 @@ export function providerOf(model) {
   return 'otros';
 }
 
-export function getCosts() {
+// ccusage a veces no sabe el precio de un id de OpenRouter (alias, preset MoA,
+// modelo nuevo) y lo deja en $0 con tokens reales. OpenRouter publica su propia
+// lista de precios pública — la usamos como fallback en vez de solo avisar.
+const OR_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const OR_PRICING_TTL_MS = 6 * 3600_000;
+let orPricingCache = null; // { ts, map }
+
+async function getOpenRouterPricing() {
+  if (orPricingCache && Date.now() - orPricingCache.ts < OR_PRICING_TTL_MS) return orPricingCache.map;
+  try {
+    const res = await fetch(OR_MODELS_URL);
+    if (!res.ok) throw new Error(String(res.status));
+    const body = await res.json();
+    const map = new Map();
+    for (const m of body.data || []) {
+      const p = m.pricing || {};
+      map.set(m.id, { prompt: Number(p.prompt) || 0, completion: Number(p.completion) || 0 });
+    }
+    orPricingCache = { ts: Date.now(), map };
+    return map;
+  } catch {
+    return orPricingCache?.map || new Map(); // degradado: sin red, sin precios nuevos
+  }
+}
+
+export async function getCosts() {
+  const orPricing = await getOpenRouterPricing();
   const data = readMetrics((db) => {
     const since = todayMinus(30);
     const rows = db.prepare(
@@ -84,15 +110,24 @@ export function getCosts() {
 
   for (const r of rows) {
     const prov = providerOf(r.model);
-    const cost = Number(r.cost_usd) || 0;
-    const tok = (Number(r.input_tokens) || 0) + (Number(r.output_tokens) || 0);
+    const inTok = Number(r.input_tokens) || 0;
+    const outTok = Number(r.output_tokens) || 0;
+    let cost = Number(r.cost_usd) || 0;
+    // ccusage no supo precear este id: si es de OpenRouter, usar su lista de precios.
+    if (cost === 0 && prov === 'openrouter' && (inTok + outTok) > 0) {
+      // Precio negativo (ej. -1) es el sentinel de OpenRouter para "variable /
+      // sin precio fijo" (routers como `openrouter/auto`), no un precio real.
+      const price = orPricing.get(r.model);
+      if (price && price.prompt >= 0 && price.completion >= 0) cost = inTok * price.prompt + outTok * price.completion;
+    }
+    const tok = inTok + outTok;
 
     const d = byDay.get(r.day) || { day: r.day, cost: 0, anthropic: 0, openrouter: 0, local: 0, otros: 0 };
     d.cost += cost; d[prov] += cost; byDay.set(r.day, d);
 
     const key = r.model;
     const m = byModel.get(key) || { model: key, provider: prov, cost: 0, input: 0, output: 0 };
-    m.cost += cost; m.input += Number(r.input_tokens) || 0; m.output += Number(r.output_tokens) || 0;
+    m.cost += cost; m.input += inTok; m.output += outTok;
     byModel.set(key, m);
 
     byProvider[prov].cost += cost;
@@ -104,6 +139,8 @@ export function getCosts() {
   }
 
   const days = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+  const today = days.find((d) => d.day === todayMinus(0))
+    || { day: todayMinus(0), cost: 0, anthropic: 0, openrouter: 0, local: 0, otros: 0 };
   const models = [...byModel.values()].sort((a, b) => b.cost - a.cost)
     // Costo 0 con tokens reales = ccusage no supo precear ese id (alias, preset
     // MoA). No es lo mismo que "es local y sale 0" — se marca para no mentir.
@@ -123,11 +160,15 @@ export function getCosts() {
   // los modelos `org/modelo`. Se expone aparte y etiquetado como tal.
   const orDaily30 = (orDaily || []).map((d) => ({ day: d.day, cost: Number(Number(d.cost).toFixed(4)) }));
   const orTotal30 = orDaily30.reduce((a, d) => a + d.cost, 0);
+  // Umbral de saldo bajo en USD absolutos, NO en % del crédito histórico: ese
+  // % baja solo, cada vez que se carga saldo, aunque el saldo real no cambie.
+  const orLowBalance = Number(getSetting('openrouter_low_balance_usd', '10')) || 10;
   const openrouter = {
     used_total: orRows?.[0]?.used_total ?? null,
     limit: orCredit?.limit_usd ?? null,
     remaining: orCredit?.remaining ?? null,
     credits: orCredit?.credits ?? null,
+    lowBalanceThreshold: orLowBalance,
     updatedAt: orCredit?.ts ? new Date(orCredit.ts * 1000).toISOString() : null,
     daily: orDaily30,
     models: (orModels || []).map((m) => ({ model: m.model, cost: Number(Number(m.cost).toFixed(4)) })).slice(0, 20),
@@ -150,10 +191,10 @@ export function getCosts() {
   if (plan?.util_7d != null && plan.util_7d >= 0.8) alerts.push({ level: plan.util_7d >= 0.95 ? 'err' : 'warn', text: `Cuota Claude 7d al ${Math.round(plan.util_7d * 100)}%` });
   if (plan?.util_5h != null && plan.util_5h >= 0.9) alerts.push({ level: 'warn', text: `Cuota Claude 5h al ${Math.round(plan.util_5h * 100)}%` });
   // Saldo de OpenRouter: es prepago, si se acaba dejan de andar los modelos.
-  if (openrouter.limit > 0 && openrouter.remaining != null) {
-    const left = openrouter.remaining / openrouter.limit;
-    if (left <= 0.05) alerts.push({ level: 'err', text: `OpenRouter casi sin saldo: quedan $${openrouter.remaining.toFixed(2)} de $${openrouter.limit}` });
-    else if (left <= 0.2) alerts.push({ level: 'warn', text: `OpenRouter al ${Math.round((1 - left) * 100)}%: quedan $${openrouter.remaining.toFixed(2)} de $${openrouter.limit}` });
+  // Umbral absoluto en USD (configurable), no % del crédito histórico.
+  if (openrouter.remaining != null) {
+    if (openrouter.remaining <= orLowBalance) alerts.push({ level: 'err', text: `OpenRouter casi sin saldo: quedan $${openrouter.remaining.toFixed(2)}` });
+    else if (openrouter.remaining <= orLowBalance * 2) alerts.push({ level: 'warn', text: `OpenRouter con poco saldo: quedan $${openrouter.remaining.toFixed(2)} (aviso bajo $${(orLowBalance * 2).toFixed(0)})` });
   }
   if (budget > 0) {
     const pct = monthTotal / budget;
@@ -163,10 +204,9 @@ export function getCosts() {
   if (openrouter.outsideSessions > 1) {
     alerts.push({ level: 'warn', text: `$${openrouter.outsideSessions} de OpenRouter (30d) no salen de sesiones de Claude Code — es el agente u otros clientes pegándole a la API directo` });
   }
-  const unpriced = models.filter((m) => m.unpriced);
-  if (unpriced.length) {
-    alerts.push({ level: 'warn', text: `${unpriced.length} modelo(s) con tokens pero sin precio conocido (${unpriced.slice(0, 3).map((m) => m.model).join(', ')}) — su costo real no está contado` });
-  }
+  // Ya no hay aviso de "modelos sin precio": los de OpenRouter se precean con su
+  // propia lista de precios (arriba). Sigue quedando el flag `unpriced` por modelo
+  // para el caso residual (id que ni OpenRouter reconoce), pero sin alerta.
 
   return {
     ok: true,
@@ -177,6 +217,7 @@ export function getCosts() {
       total30: Number(total30.toFixed(2)),
       monthTotal: Number(monthTotal.toFixed(2)),
       days,
+      today: { ...today, cost: Number(today.cost.toFixed(2)), anthropic: Number(today.anthropic.toFixed(2)), openrouter: Number(today.openrouter.toFixed(2)) },
       models: models.map((m) => ({ ...m, cost: Number(m.cost.toFixed(2)) })),
     },
     providers,

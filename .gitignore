@@ -5,3 +5,4 @@ data/
 docs/
 *.log
 HANDOFF.md
+.worktrees/

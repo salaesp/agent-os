@@ -7,20 +7,24 @@ import { Kanban } from './panels/Kanban.jsx';
 import { MissionControl } from './panels/MissionControl.jsx';
 import { Dreaming } from './panels/Dreaming.jsx';
 import { Suggestions } from './panels/Suggestions.jsx';
+import { CodeReview } from './panels/CodeReview.jsx';
+import { Rem } from './panels/Rem.jsx';
 import { Profile } from './panels/Profile.jsx';
 import { Costs } from './panels/Costs.jsx';
 import { Chat } from './panels/Chat.jsx';
 import { Console } from './panels/Console.jsx';
 import { Obsidian } from './panels/Obsidian.jsx';
+import { Docs } from './panels/Docs.jsx';
 import { HermesCaduceus } from './components/HermesBanner.jsx';
 import { GlobalSearch } from './components/GlobalSearch.jsx';
 import { currentView } from './route.js';
 
-// Nav del Agent OS: 13 secciones en 5 grupos, ordenados por CÓMO se usan —
+// Nav del Agent OS: 14 secciones en 5 grupos, ordenados por CÓMO se usan —
 // primero hablarle al agente, después lo que él te propone, después lo que se
 // planifica y corre, después la memoria, y al final la infraestructura.
-// El buscador es global (titlebar). Analytics, Aprobaciones y Documentos
-// salieron; Memoria se fusionó en Perfil; Obsidian aparte.
+// El buscador es global (titlebar). Analytics y Aprobaciones salieron;
+// Memoria se fusionó en Perfil; Obsidian aparte. Documentos volvió (audio de
+// research: docs.js/Docs.jsx generan .mp3 ahí).
 // En mobile el sidebar pasa a barra horizontal y los títulos de grupo se
 // ocultan por CSS: ahí esto es simplemente el orden de los íconos.
 const GROUPS = [
@@ -36,7 +40,9 @@ const GROUPS = [
     label: 'Proactividad',
     items: [
       { id: 'suggestions', label: 'Sugerencias', icon: 'lightbulb', comp: Suggestions },
+      { id: 'code-review', label: 'Revisión de código', icon: 'fact_check', comp: CodeReview },
       { id: 'dreaming', label: 'Dreaming', icon: 'bedtime', comp: Dreaming },
+      { id: 'rem', label: 'REM', icon: 'nightlight', comp: Rem },
     ],
   },
   {
@@ -52,6 +58,7 @@ const GROUPS = [
     items: [
       { id: 'profile', label: 'Perfil', icon: 'person', comp: Profile },
       { id: 'obsidian', label: 'Obsidian', icon: 'menu_book', comp: Obsidian },
+      { id: 'docs', label: 'Documentos', icon: 'description', comp: Docs },
     ],
   },
   {

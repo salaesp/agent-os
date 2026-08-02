@@ -6,7 +6,40 @@
 // no elucubrar. Cierra el loop: postea hallazgos como comentario, completa la
 // tarea, y lo que encuentra puede bajar a nuevas sugerencias (mismo pipeline de
 // 1-click que dreamer.js::promoteDream).
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createSuggestion, listSuggestions, activeNegatives, recordDecision } from './db.js';
+import { config } from './config.js';
+
+const RESEARCH_DOCS_DIR = join(config.docsDir, 'research');
+
+function slugify(s) {
+  return String(s || 'investigacion')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'investigacion';
+}
+
+// Guarda el hallazgo completo como markdown en docsDir/research — así queda
+// accesible desde el panel Documentos del Agent OS (y en la búsqueda global),
+// en vez de perderse truncado en un comentario de kanban.
+async function saveFindingsDoc(task, findings) {
+  await mkdir(RESEARCH_DOCS_DIR, { recursive: true }).catch(() => {});
+  const rel = `research/${task.id}-${slugify(task.title)}.md`;
+  const full = join(config.docsDir, rel);
+  const body = `---
+title: "${String(task.title || '').replace(/"/g, '\\"')}"
+task_id: ${task.id}
+board: research
+date: ${new Date().toISOString()}
+---
+
+${findings}
+`;
+  await writeFile(full, body, 'utf8');
+  return rel;
+}
 
 const ACTIONS = new Set(['cron', 'kanban', 'reminder', 'memory', 'goal', 'none']);
 const CATEGORIES = new Set(['workflow', 'vida', 'aprendizaje']);
@@ -75,8 +108,15 @@ async function _run(adapter, limit) {
 
   let processed = 0, created = 0;
   for (const task of pending) {
+    // Claim ready → running: así queda visible en el board mientras se
+    // investiga, no solo al terminar. Si no se puede (ya no está ready,
+    // alguien más la tomó), se salta sin tocarla.
+    const claimed = await adapter.kanbanClaim('(default)', task.id, 'research').catch(() => ({ ok: false }));
+    if (!claimed.ok) continue;
+
     const gen = await adapter.research('(default)', investigatePrompt(task)).catch((e) => ({ ok: false, error: e.message }));
     if (!gen.ok) {
+      await adapter.kanbanReclaim('(default)', task.id, 'research', gen.error || 'investigación falló').catch(() => {});
       recordDecision({
         actor: 'agent', stage: 'investigate', subject_type: 'none', title: task.title,
         choice: 'failed', rationale: gen.error || 'sin detalle', evidence: { taskId: task.id, board: task.board },
@@ -85,7 +125,9 @@ async function _run(adapter, limit) {
     }
 
     const findings = extractFindings(gen.text) || '(sin hallazgos de texto)';
-    await adapter.kanbanComment('(default)', task.id, findings.slice(0, 4000), 'research').catch(() => {});
+    const docPath = await saveFindingsDoc(task, findings).catch(() => null);
+    const docLink = docPath ? `\n\n📄 Documento completo: #/docs?doc=${encodeURIComponent(docPath)}` : '';
+    await adapter.kanbanComment('(default)', task.id, findings.slice(0, 4000) + docLink, 'research').catch(() => {});
     await adapter.kanbanAction('(default)', task.id, 'complete', { board: 'research', summary: findings.slice(0, 300) }).catch(() => {});
     processed++;
 

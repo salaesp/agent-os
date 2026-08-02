@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { join, normalize, extname } from 'node:path';
 import { config } from './config.js';
 import { HermesAdapter } from './adapters/hermes/HermesAdapter.js';
-import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting, getProfile, setProfile, clearSuggestions, deleteSuggestion } from './db.js';
+import { listGoals, createGoal, updateGoal, deleteGoal, allSettings, setSetting, getProfile, setProfile, clearSuggestions, deleteSuggestion, listCodeSuggestions, listCodeSuggestionEvents, getCodeSuggestion, setCodeSuggestionStatus, linkCodeSuggestionTask } from './db.js';
 import { getInbox, generateSuggestions, applySuggestion, applySuggestions, dismissSuggestion, dismissSuggestions, snoozeSuggestion, restoreSuggestion, sendMorningBrief, quickAction } from './suggestions.js';
 import { learnProfile } from './profile-learner.js';
 import { scoutSkills } from './skill-scout.js';
@@ -20,9 +20,13 @@ import { startScheduler } from './scheduler.js';
 import { computeAffinity } from './preferences.js';
 import { getSecrets } from './secrets.js';
 import { getCosts } from './costs.js';
-import { listDocs, readDoc, rawDoc, deleteDoc } from './docs.js';
+import { listDocs, readDoc, rawDoc, deleteDoc, generateAudioDoc } from './docs.js';
+import { ttsAvailable } from './tts.js';
 import { detectSoftware } from './onboarding.js';
 import { listProjects, buildGraph } from './codegraph.js';
+import { listGitProjects, fetchProject, setProjectEnabled } from './projects.js';
+import { verifyTaskWorktree } from './project-worktrees.js';
+import { generateCodeReview, codeReviewStatus } from './code-review.js';
 import { listWorkspaces, getSessions as getTermSessions, killSession, resizeSession, writeInput, attachStream } from './terminal.js';
 
 // Los hooks inyectan el registro de ejecuciones: el adapter no importa db.js.
@@ -228,13 +232,29 @@ const handler = async (req, res) => {
         return sendJson(res, r, r.ok ? 200 : 400);
       }
       if (path === '/api/kanban/action') {
+        // Completar una tarea de código pasa por un gate verificable: el
+        // worktree preparado debe estar limpio y dejar evidencia de tests y
+        // documentación. Otras acciones/tareas mantienen el flujo existente.
+        if (body.action === 'complete') {
+          const detail = await adapter.kanbanShow(body.profile || '(default)', body.id, body.board);
+          const task = detail.task || detail;
+          const taskBody = String(task?.body || task?.description || '');
+          const project = taskBody.match(/^Repo:\s*([^\n\r]+)/im)?.[1]?.trim() || null;
+          if (project) {
+            const comments = Array.isArray(detail.comments) ? detail.comments : [];
+            const evidence = [task.body, task.description, body.summary, ...comments.map((c) => c.text || c.body || c.content || '')].filter(Boolean).join('\n');
+            const gate = await verifyTaskWorktree({ projectName: project, taskId: body.id, completionText: evidence });
+            if (!gate.ok) return sendJson(res, { error: gate.error, verification: gate }, 400);
+            body.summary = body.summary || `Verificado por Agent OS: ${gate.changed.length} archivo(s), documentación ${gate.docsChanged ? 'actualizada' : 'no aplica justificada'}.`;
+          }
+        }
         const r = await adapter.kanbanAction(body.profile, body.id, body.action, body);
         cache.clear();
         return sendJson(res, r, r.ok ? 200 : 400);
       }
-      // Bandeja "default": dispara el coder AHORA sobre una tarea puntual, sin
-      // esperar el tick del gateway. El pipeline coder→reviewer (branch, PR,
-      // merge automático a main si pasa la revisión) vive del lado de Hermes.
+      // Bandeja "default": dispara coder o researcher AHORA sobre una tarea
+      // puntual, sin esperar el tick del gateway. La ejecución vive del lado
+      // de Hermes con OpenAI.
       if (path === '/api/kanban/run-now') {
         const r = await runTaskNow(adapter, { board: body.board, id: body.id, profile: body.targetProfile || 'coder' });
         cache.clear();
@@ -274,6 +294,28 @@ const handler = async (req, res) => {
       if (path === '/api/suggestions/clear') { cache.clear(); return sendJson(res, clearSuggestions(body.scope || 'all')); }
       if (path === '/api/suggestions/delete') { cache.clear(); return sendJson(res, deleteSuggestion(body.id)); }
       if (path === '/api/suggestions/brief') { const r = await sendMorningBrief(adapter, { force: true }); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
+      if (path === '/api/code-review/generate') { const r = await generateCodeReview(adapter); cache.clear(); return sendJson(res, r, r.ok ? 200 : (r.busy ? 409 : 400)); }
+      if (path === '/api/code-review/status') { cache.clear(); return sendJson(res, setCodeSuggestionStatus(body.id, body.status)); }
+      if (path === '/api/code-review/create-task') {
+        const finding = getCodeSuggestion(body.id);
+        const board = String(body.board || 'default');
+        if (!finding) return sendJson(res, { error: 'hallazgo no existe' }, 404);
+        if (finding.task_created_at) return sendJson(res, { error: `ya se creó una tarea en ${finding.task_board || 'un board'}` }, 409);
+        const taskBody = [
+          `Repo: ${finding.project}`,
+          `Branch base: ${finding.branch || 'la rama actual del repositorio'}`,
+          `Hallazgo: ${finding.title}`,
+          `Impacto: ${finding.rationale || 'Revisar el impacto técnico.'}`,
+          `Evidencia: ${finding.evidence || 'Revisión programada de Agent OS.'}`,
+          `Siguiente paso: ${finding.next_step || 'Revisar la evidencia y decidir el tratamiento técnico.'}`,
+          'Validación: ejecutar los tests/lint relevantes y registrar el resultado.',
+          'Documentación: actualizar README, docs/, changelog o ADR si cambia API, comportamiento, configuración o arquitectura; si no aplica, dejar la justificación.',
+        ].join('\n\n');
+        const r = await adapter.kanbanCreate('(default)', { title: finding.title, body: taskBody, board });
+        if (r.ok) linkCodeSuggestionTask(finding.id, board);
+        cache.clear();
+        return sendJson(res, r, r.ok ? 200 : 400);
+      }
       if (path === '/api/push/test') {
         const r = await adapter.pushMessage(body.channel || 'discord', body.text || '🔔 Test de entrega proactiva del Agent OS — podés ignorar este mensaje.');
         return sendJson(res, r, r.ok ? 200 : 400);
@@ -323,6 +365,10 @@ const handler = async (req, res) => {
       }
       if (path === '/api/goals/delete') return sendJson(res, deleteGoal(body.id));
       if (path === '/api/docs/delete') { const r = await deleteDoc(body.path); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
+      if (path === '/api/docs/tts') { const r = await generateAudioDoc(body.path); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
+      // Actualiza únicamente refs remotas. Nunca modifica la rama ni el árbol.
+      if (path === '/api/projects/fetch') { const r = await fetchProject(body.path); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
+      if (path === '/api/projects/enabled') { const r = await setProjectEnabled(body.path, body.enabled); cache.clear(); return sendJson(res, r, r.ok ? 200 : 400); }
       if (path === '/api/settings/set') {
         if (!body.key) return sendJson(res, { error: 'key requerida' }, 400);
         const r = setSetting(body.key, body.value ?? '');
@@ -365,6 +411,7 @@ const handler = async (req, res) => {
 
     // Proactividad: inbox de sugerencias + perfil de usuario
     if (path === '/api/suggestions') return sendJson(res, getInbox());
+    if (path === '/api/code-review') return sendJson(res, { ok: true, findings: listCodeSuggestions(), events: listCodeSuggestionEvents(), schedule: codeReviewStatus() });
     if (path === '/api/profile') return sendJson(res, getProfile());
     if (path === '/api/preferences') return sendJson(res, computeAffinity());
     if (path === '/api/skills/all') return sendJson(res, { skills: await adapter.getSkillsAllProfiles() });
@@ -400,9 +447,10 @@ const handler = async (req, res) => {
     // Code graph
     if (path === '/api/codegraph/projects') return sendJson(res, await listProjects());
     if (path === '/api/codegraph') return sendJson(res, await buildGraph(url.searchParams.get('path')));
+    if (path === '/api/projects') return sendJson(res, await listGitProjects());
 
     // Documentos
-    if (path === '/api/docs') return sendJson(res, await listDocs());
+    if (path === '/api/docs') return sendJson(res, { ...(await listDocs()), ttsAvailable: await ttsAvailable() });
     if (path === '/api/docs/read') return sendJson(res, await readDoc(url.searchParams.get('path')));
     if (path === '/api/docs/raw') {
       const r = await rawDoc(url.searchParams.get('path'));

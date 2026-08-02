@@ -32,7 +32,7 @@ Preact+Vite (app/)  ──/api/*──►  Node zero-dep (src/)  ──►  Agen
 | Conexiones | gateways, canales, MCP por perfil | — |
 | Pantheon | personas (`SOUL.md`+`config.yaml`) + skills (`SKILL.md`+`.usage.json`) | — |
 | Analytics | uso de skills, skills muertas, ROI de tiempo/plata | — |
-| Code Graph | grafo de dependencias (imports) de proyectos en `~/code` | — |
+| Code Graph | grafo de dependencias e inventario Git seguro de proyectos en `~/code` | `fetch` manual |
 | Costos | Claude+OpenRouter (lee `metrics.db` del dashboard) + alertas | ✓ presupuesto |
 | Crons | jobs + historial; crear/pausar/reanudar/ejecutar/eliminar | ✓ |
 | Kanban | tablero multi-board; crear/comentar/completar/bloquear/archivar | ✓ |
@@ -81,6 +81,23 @@ gateway `:8642` no está habilitado). La cola HITL real y el chat con streaming
 necesitan habilitar ese gateway. La parte del "code graph" que reduce tokens del
 agente (repo externo del video) necesita su URL para integrarse; la vista visual
 del grafo ya está.
+
+## Proyectos Git y sugerencias de código
+
+Code Graph también muestra salud Git de los repositorios locales y permite
+actualizar sus referencias remotas con `git fetch --prune origin`. Nunca hace
+`pull`, checkout o cambios de archivos automáticamente. El motor de Sugerencias
+recibe un resumen de rama, cambios locales, distancia con el upstream, último
+commit y presencia de documentación; las sugerencias de código se crean como
+tareas Kanban y deben incluir validación y actualización de documentación cuando
+corresponda. Ver [`PROJECT_INTELLIGENCE.md`](PROJECT_INTELLIGENCE.md).
+
+Configuración: `CODE_PROJECTS_ROOT` (por defecto `CODE_GRAPH_ROOT` o `~/code`),
+`CODE_PROJECT_WORKTREES_ROOT`, y los settings `project_suggestions_enabled`
+(default `1`), `project_auto_fetch_enabled` (default `0`) y
+`project_fetch_interval_h` (default `24`). Al disparar un coder para una tarea
+de proyecto, se crea un worktree aislado con una rama `codex/agentos-…`; el
+checklist de tests y documentación bloquea el despacho si no está presente.
 
 ## Consola (Claude Code por web)
 

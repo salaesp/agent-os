@@ -144,8 +144,9 @@ function TaskModal({ task, busy, mutate, onClose }) {
       if (a === 'archive') onClose(); else refresh();
     }
   };
-  const runNow = async () => {
-    if (await mutate('/api/kanban/run-now', req, 'coder disparado — mirá "ejecuciones" en unos minutos')) refresh();
+  const runNow = async (targetProfile) => {
+    const label = targetProfile === 'researcher' ? 'researcher' : 'coder';
+    if (await mutate('/api/kanban/run-now', { ...req, targetProfile }, `${label} disparado con OpenAI — mirá "ejecuciones" en unos minutos`)) refresh();
   };
   const sendComment = async () => {
     if (!draft.trim()) return;
@@ -188,11 +189,14 @@ function TaskModal({ task, busy, mutate, onClose }) {
         </div>
 
         <div class="wrap" style="padding-bottom:10px;border-bottom:1px solid var(--hairline)">
-          {task.board === 'default' && !['running', 'done', 'archived'].includes(t.status) && (
-            <button class="chip small filter-chip on" disabled={busy} onClick={runNow} title="Asigna la tarea al perfil coder y dispara el pipeline coder→reviewer ahora, sin esperar al tick nocturno. El merge a main es automático si pasa la revisión.">
-              <span class="msr" style="font-size:14px">bolt</span>Ejecutar con Claude Code
+          {task.board === 'default' && !['running', 'done', 'archived'].includes(t.status) && <>
+            <button class="chip small filter-chip on" disabled={busy} onClick={() => runNow('coder')} title="Asigna la tarea al perfil coder, que la ejecuta directamente con OpenAI mediante Hermes. Conserva el pipeline coder→reviewer.">
+              <span class="msr" style="font-size:14px">bolt</span>Implementar
             </button>
-          )}
+            <button class="chip small" disabled={busy} onClick={() => runNow('researcher')} title="Asigna la tarea al perfil researcher para investigar y dejar hallazgos en Kanban usando OpenAI.">
+              <span class="msr" style="font-size:14px">travel_explore</span>Investigar con OpenAI
+            </button>
+          </>}
           {t.status !== 'done' && <button class="chip small" disabled={busy} onClick={() => act('complete')}><span class="msr" style="font-size:14px">check</span>Completar</button>}
           {t.status !== 'blocked'
             ? <button class="chip small" disabled={busy} onClick={() => act('block')}><span class="msr" style="font-size:14px">block</span>Bloquear</button>

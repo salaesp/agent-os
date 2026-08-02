@@ -10,11 +10,15 @@ import { generateDreams } from './dreamer.js';
 import { ideateForGoals } from './ideator.js';
 import { runInvestigations } from './investigator.js';
 import { consolidateREM } from './rem.js';
+import { syncEnabledProjects } from './projects.js';
+import { generateCodeReview } from './code-review.js';
 import { getSetting, setSetting, localDay, purgeTrail } from './db.js';
 
 const CHECK_MS = 15 * 60 * 1000; // cada 15 min
 let inFlight = false;
 let nightlyInFlight = false;
+let projectSyncInFlight = false;
+let codeReviewInFlight = false;
 
 const num = (k, d) => Number(getSetting(k, String(d)));
 const todayStr = () => localDay();
@@ -75,6 +79,38 @@ async function maybeGenerate(adapter) {
   } finally {
     inFlight = false;
   }
+}
+
+// Sincronización Git deliberadamente opt-in: `fetch` cambia referencias remotas,
+// aunque nunca toca el árbol de trabajo. Corre como máximo cada N horas y nunca
+// usa pull/checkout/merge.
+async function maybeSyncProjects() {
+  if (projectSyncInFlight || getSetting('project_auto_fetch_enabled', '0') !== '1') return;
+  const intervalMs = Math.max(1, num('project_fetch_interval_h', 24)) * 3600_000;
+  const last = Date.parse(getSetting('project_last_fetch_at', '') || '') || 0;
+  if (Date.now() - last < intervalMs) return;
+  projectSyncInFlight = true;
+  try {
+    const r = await syncEnabledProjects();
+    setSetting('project_last_fetch_at', new Date().toISOString());
+    console.log(`[scheduler] proyectos: ${r.synced || 0} fetch, ${r.failed || 0} fallidos`);
+  } catch (e) { console.error('[scheduler] proyectos falló:', e.message); }
+  finally { projectSyncInFlight = false; }
+}
+
+// Revisión técnica independiente: su cadencia no consume el cupo de
+// proactividad personal y no genera tareas ni cambios por cuenta propia.
+async function maybeCodeReview(adapter) {
+  if (codeReviewInFlight || getSetting('code_review_enabled', '1') !== '1') return;
+  const days = Math.max(1, num('code_review_interval_days', 7));
+  const last = Date.parse(getSetting('code_review_last_at', '') || '') || 0;
+  if (Date.now() - last < days * 86400_000) return;
+  codeReviewInFlight = true;
+  try {
+    const r = await generateCodeReview(adapter, { trigger: 'scheduled' });
+    console.log(`[scheduler] revisión de código: ${r.created || 0} hallazgos, ${r.skipped || 0} omitidos`);
+  } catch (e) { console.error('[scheduler] revisión de código falló:', e.message); }
+  finally { codeReviewInFlight = false; }
 }
 
 // Un paso del bundle: aislado, nunca tumba a los que siguen.
@@ -167,6 +203,8 @@ async function maybeNightly(adapter) {
 }
 
 async function tick(adapter) {
+  await maybeSyncProjects();
+  await maybeCodeReview(adapter);
   await maybeNightly(adapter).catch((e) => console.error('[scheduler] nocturno falló:', e.message));
   await maybeGenerate(adapter).catch((e) => console.error('[scheduler] borde falló:', e.message));
 }

@@ -45,6 +45,12 @@ export const config = {
   docsDir: env('DOCS_DIR', join(import.meta.dirname, '..', 'docs')),
   // Code graph: raíz donde buscar proyectos (dirs con package.json).
   codeGraphRoot: env('CODE_GRAPH_ROOT', join(HOME, 'code')),
+  // Inventario Git: repos locales a analizar. No se clona ni se hace pull;
+  // CODE_PROJECTS_ROOT permite separarlo del Code Graph si hiciera falta.
+  projectsRoot: env('CODE_PROJECTS_ROOT', env('CODE_GRAPH_ROOT', join(HOME, 'code'))),
+  // Worktrees aislados para tareas de código aprobadas. Se crea uno por tarea
+  // sólo al despachar el coder; la carpeta oculta no entra al inventario.
+  projectWorktreesRoot: env('CODE_PROJECT_WORKTREES_ROOT', join(env('CODE_PROJECTS_ROOT', env('CODE_GRAPH_ROOT', join(HOME, 'code'))), '.agent-os-worktrees')),
   // Consola web: binario de Claude Code que se levanta dentro del workspace elegido.
   claudeBin: env('CLAUDE_BIN', join(HOME, '.local', 'bin', 'claude')),
 
@@ -61,6 +67,11 @@ export const config = {
   // Bitwarden Secrets Manager (solo lectura de NOMBRES para la bóveda). Opcional.
   bwsAccessToken: env('BWS_ACCESS_TOKEN', null),
   bwsBin: env('BWS_BIN', join(HOME, '.local', 'bin', 'bws')),
+
+  // API key de OpenRouter para TTS (audio de research). Override manual opcional
+  // por entorno — el camino normal es resolverla en vivo desde Bitwarden
+  // (secrets.js::getSecretValue), no pegarla acá en texto plano.
+  openrouterApiKey: env('OPENROUTER_API_KEY', null),
 
   // Gateway API OpenAI-compatible de Hermes (para el chat, fase posterior).
   gatewayApiUrl: env('HERMES_GATEWAY_API', 'http://127.0.0.1:8642'),

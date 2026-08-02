@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { post, useApi } from '../api.js';
 import { PageHead, Loading, ErrorBox, rel } from '../components/ui.jsx';
+import { ModelPicker } from '../components/ModelPicker.jsx';
 
 const KIND = {
   idea: { icon: 'lightbulb', label: 'idea' },
@@ -18,6 +19,9 @@ export function Dreaming() {
   const { data: settings, reload: reloadCfg } = useApi('/api/settings', 0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [showCfg, setShowCfg] = useState(false);
+  const [editModel, setEditModel] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
 
   const promoting = data?.promoting || {};
   const anyPromoting = Object.keys(promoting).length > 0;
@@ -27,10 +31,22 @@ export function Dreaming() {
   if (error) return <><PageHead title="Dreaming" /><ErrorBox error={error} /></>;
 
   const autoOn = (settings?.auto_dream_enabled ?? '1') === '1';
-  const nightlyHour = settings?.auto_nightly_hour || '8';
+  const nightlyHour = Number(settings?.auto_nightly_hour || '8');
+  const model = settings?.auto_model || null;
+  const provider = settings?.auto_provider || null;
   const toggleAuto = async () => {
     await post('/api/settings/set', { key: 'auto_dream_enabled', value: autoOn ? '0' : '1' });
     reloadCfg();
+  };
+  const setCfg = async (key, value) => { await post('/api/settings/set', { key, value }); reloadCfg(); };
+  const saveModel = async ({ model: m, provider: p }) => {
+    setModelBusy(true);
+    try {
+      await post('/api/settings/set', { key: 'auto_model', value: m || '' });
+      await post('/api/settings/set', { key: 'auto_provider', value: p || '' });
+      setEditModel(false);
+      reloadCfg();
+    } finally { setModelBusy(false); }
   };
 
   const dream = async () => {
@@ -69,8 +85,42 @@ export function Dreaming() {
             <b>Sueña solo {autoOn ? 'ON' : 'OFF'}</b>
             <span class="muted">· una vez por día, a partir de las {nightlyHour}h</span>
           </div>
-          <button class={`chip filter-chip ${autoOn ? 'on' : ''}`} onClick={toggleAuto}>{autoOn ? 'Desactivar' : 'Activar'}</button>
+          <div class="wrap">
+            <button class="chip small" onClick={() => setShowCfg((v) => !v)}>
+              <span class="msr" style="font-size:14px">{showCfg ? 'expand_less' : 'tune'}</span>{showCfg ? 'ocultar' : 'ajustar'}
+            </button>
+            <button class={`chip filter-chip ${autoOn ? 'on' : ''}`} onClick={toggleAuto}>{autoOn ? 'Desactivar' : 'Activar'}</button>
+          </div>
         </div>
+
+        {showCfg && (
+          <>
+            <div class="spread" style="padding:10px 0 0;margin-top:10px;border-top:1px solid var(--hairline)">
+              <span class="muted" style="font-size:12px">Hora del bundle nocturno</span>
+              <div class="seg">{[6, 7, 8, 9, 10].map((h) => <button class={nightlyHour === h ? 'on' : ''} onClick={() => setCfg('auto_nightly_hour', String(h))} key={h}>{h}h</button>)}</div>
+            </div>
+            <div class="muted" style="font-size:11px;padding:6px 0 4px">Compartida con Sugerencias: es la misma hora para todo el bundle nocturno.</div>
+
+            <div style="padding:10px 0 0;margin-top:2px;border-top:1px solid var(--hairline)">
+              <div class="wrap">
+                <span class="muted" style="font-size:12px">Modelo</span>
+                <span class="chip small mono">{model || 'modelo del perfil'}</span>
+                {provider && <span class="chip small">{provider}</span>}
+                {!editModel && (
+                  <button class="chip small" onClick={() => setEditModel(true)}>
+                    <span class="msr" style="font-size:14px">edit</span>cambiar
+                  </button>
+                )}
+              </div>
+              {editModel && (
+                <div style="margin-top:8px;max-width:520px">
+                  <ModelPicker model={model} provider={provider} inherit busy={modelBusy} onSave={saveModel} onCancel={() => setEditModel(false)} />
+                </div>
+              )}
+              <div class="muted" style="font-size:11px;margin-top:8px">Mismo modelo que usa la generación nocturna de sugerencias — es un ajuste compartido del motor.</div>
+            </div>
+          </>
+        )}
       </div>
       {busy && <div class="card" style="margin-bottom:12px"><div class="muted">El agente está pensando en tu vida — patrones, conexiones, ideas de mayor vuelo. Puede tardar un rato…</div></div>}
       {anyPromoting && (
