@@ -35,17 +35,4 @@ export function stateDot(state) {
 export function Dot({ state }) { return <span class={`dot ${stateDot(state)}`} />; }
 
 // Tiempo relativo compacto en español.
-export function rel(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso).getTime();
-  if (Number.isNaN(d)) return '—';
-  const s = Math.round((d - Date.now()) / 1000);
-  const abs = Math.abs(s);
-  const fmt = (n, u) => `${n}${u}`;
-  let str;
-  if (abs < 60) str = fmt(abs, 's');
-  else if (abs < 3600) str = fmt(Math.round(abs / 60), 'm');
-  else if (abs < 86400) str = fmt(Math.round(abs / 3600), 'h');
-  else str = fmt(Math.round(abs / 86400), 'd');
-  return s < 0 ? `hace ${str}` : `en ${str}`;
-}
+export { rel } from '../time.js';
